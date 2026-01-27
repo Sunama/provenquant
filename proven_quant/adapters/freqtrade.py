@@ -1,84 +1,65 @@
+from datetime import datetime
 import pandas as pd
 
-def merge_dataframe_into_labels(
-    dataframe: pd.DataFrame,
-    labels: pd.Series,
-    datetime_col: str = 'index',
+def get_entry_row(
+    dp,
+    pair: str,
+    timeframe: str,
+    entry_time: datetime
 ) -> pd.DataFrame:
-    """Merge original dataframe features into labels based on datetime index.
+    """Retrieve the dataframe row corresponding to the trade entry time.
+    
+    Args:
+        dp (object): Data provider object with method get_analyzed_dataframe.
+        pair (str): Trading pair.
+        timeframe (str): Timeframe of the data.
+        entry_time (datetime): Entry time of the trade.
+        
+    Returns:
+        pd.DataFrame: DataFrame row corresponding to the entry time.
+    """
+    dataframe, _ = dp.get_analyzed_dataframe(pair=pair, timeframe=timeframe)
+    entry_row = dataframe.iloc[(dataframe['date'] - entry_time).abs().argsort()[:1]]
+    
+    return entry_row
+
+def is_exit_with_vertical_barrier(
+    dp: object,
+    pair: str,
+    timeframe: str,
+    trade: object,
+    current_time: datetime,
+    vertical_barrier_col: str = 'vertical_barrier',
+) -> bool:
+    """Determine if the trade should exit based on the vertical barrier.
 
     Args:
-        dataframe (pd.DataFrame): Original DataFrame.
-        labels (pd.Series): Series containing labels with datetime index.
-        datetime_col (str): Name of the datetime column in dataframe.
-                            Defaults to 'index'.
+        dp (object): Data provider object with method get_analyzed_dataframe.
+        pair (str): Trading pair.
+        timeframe (str): Timeframe of the data.
+        trade (object): Trade object containing trade details.
+        current_time (datetime): Current time to check against the vertical barrier.
+        vertical_barrier_col (str, optional): Column name for the vertical barrier in the dataframe. Defaults to 'vertical_barrier'.
 
     Returns:
-        pd.DataFrame: DataFrame with features merged into labels.
+        bool: True if the trade should exit based on the vertical barrier, False otherwise.
     """
+    entry_row = get_entry_row(
+        dp=dp,
+        pair=pair,
+        timeframe=timeframe,
+        entry_time=trade.open_date_utc,
+    )
     
-    if datetime_col != 'index':
-        merged_df = pd.merge(
-            labels.to_frame(name='label'),
-            dataframe,
-            left_index=True,
-            right_on=datetime_col,
-            how='left'
-        )
-    else:
-        merged_df = pd.merge(
-            labels.to_frame(name='label'),
-            dataframe,
-            left_index=True,
-            right_index=True,
-            how='left'
-        )
+    current_time_ts = pd.to_datetime(current_time)
+    if current_time_ts.tzinfo is None:
+        current_time_ts = current_time_ts.tz_localize('UTC')
+    vertical_barrier = pd.Timestamp(entry_row[vertical_barrier_col].values[0])
     
-    merged_df.reset_index(drop=True, inplace=True)
-    if 'index' in merged_df.columns:
-        merged_df.drop(columns=['index'], inplace=True)
+    if vertical_barrier.tzinfo is None:
+        vertical_barrier = vertical_barrier.tz_localize('UTC')
     
-    return merged_df
-
-def merge_labels_into_dataframe(
-    dataframe: pd.DataFrame,
-    labels: pd.Series,
-    datetime_col: str = 'index',
-    label_col_name: str = 'label',
-) -> pd.DataFrame:
-    """Merge labels into the original dataframe.
-
-    Args:
-        dataframe (pd.DataFrame): Original DataFrame.
-        labels (pd.Series): Series containing labels with datetime index.
-        datetime_col (str): Name of the datetime column in dataframe.
-                            Defaults to 'index'.
-        label_col_name (str): Name of the label column to be added.
-                              Defaults to 'label'.
-
-    Returns:
-        pd.DataFrame: DataFrame with labels merged.
-    """
-    
-    dataframe = dataframe.copy()
-    
-    if datetime_col != 'index':
-        dataframe = pd.merge(
-            dataframe,
-            labels.rename(label_col_name),
-            left_on=datetime_col,
-            right_index=True,
-            how='left'
-        )
-    else:
-        dataframe = pd.merge(
-            dataframe,
-            labels.rename(label_col_name),
-            left_index=True,
-            right_index=True,
-            how='left'
-        )
-    
-    dataframe.fillna({label_col_name: 0}, inplace=True)
-    
-    return dataframe
+    if current_time_ts > vertical_barrier:
+      return True
+  
+    return False

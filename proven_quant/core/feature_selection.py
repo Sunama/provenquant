@@ -1,5 +1,6 @@
 from proven_quant.core.cross_validation import PurgedKFold
 from sklearn.metrics import accuracy_score, log_loss
+from statsmodels.tsa.stattools import adfuller, kpss
 import numpy as np
 import pandas as pd
 
@@ -9,8 +10,8 @@ def cv_score(
     y: np.ndarray,
     sample_weight: np.ndarray = None,
     n_splits: int = 5,
-    purge_size: int = 0,
-    embargo_size: int = 0,
+    purge: int = 0,
+    embargo: int = 0,
     scoring: str = 'neg_log_loss'
 ) -> list[float]:
     """Calculate cross-validated score for a given model.
@@ -21,8 +22,8 @@ def cv_score(
         y (np.ndarray): Target vector.
         sample_weight (np.ndarray, optional): Sample weights. Defaults to None.
         n_splits (int, optional): Number of splits for cross-validation. Defaults to 5.
-        purge_size (int, optional): Purge size for Purged K-Fold. Defaults to 0.
-        embargo_size (int, optional): Embargo size for Purged K-Fold. Defaults to 0.
+        purge (int, optional): Purge size for Purged K-Fold. Defaults to 0.
+        embargo (int, optional): Embargo size for Purged K-Fold. Defaults to 0.
         scoring (str, optional): Scoring metric. That are 'neg_log_loss' and 'accuracy'
                                  supported.
                                  Defaults to 'neg_log_loss'.
@@ -35,8 +36,8 @@ def cv_score(
 
     pkf = PurgedKFold(
         n_splits=n_splits,
-        purge_size=purge_size,
-        embargo_size=embargo_size
+        purge=purge,
+        embargo=embargo
     )
 
     for train_index, test_index in pkf.split(X):
@@ -70,8 +71,8 @@ def feature_importance_mda(
     target_col: str,
     sample_weight_col: str = None,
     n_splits: int = 5,
-    purge_size: int = 0,
-    embargo_size: int = 0,
+    purge: int = 0,
+    embargo: int = 0,
     scoring: str = 'neg_log_loss'
 ) -> pd.DataFrame:
     """Calculate feature importance using Mean Decrease in Accuracy (MDA)
@@ -83,8 +84,8 @@ def feature_importance_mda(
         target_col (str): Target column name.
         sample_weight_col (str, optional): Sample weight column name. Defaults to None.
         n_splits (int, optional): Number of splits for cross-validation. Defaults to 5.
-        purge_size (int, optional): Purge size for Purged K-Fold. Defaults to 0.
-        embargo_size (int, optional): Embargo size for Purged K-Fold. Defaults to 0.
+        purge (int, optional): Purge size for Purged K-Fold. Defaults to 0.
+        embargo (int, optional): Embargo size for Purged K-Fold. Defaults to 0.
         scoring (str, optional): Scoring metric. That are 'neg_log_loss' and 'accuracy'
                                  supported.
                                  Defaults to 'neg_log_loss'.
@@ -107,8 +108,8 @@ def feature_importance_mda(
 
     pkf = PurgedKFold(
         n_splits=n_splits,
-        purge_size=purge_size,
-        embargo_size=embargo_size
+        purge=purge,
+        embargo=embargo
     )
 
     for train_index, test_index in pkf.split(X):
@@ -163,8 +164,8 @@ def feature_importance_sfi(
     target_col: str,
     sample_weight_col: str = None,
     n_splits: int = 5,
-    purge_size: int = 0,
-    embargo_size: int = 0,
+    purge: int = 0,
+    embargo: int = 0,
     scoring: str = 'neg_log_loss'
 ) -> pd.DataFrame:
     """Calculate feature importance using Single Feature Importance (SFI)
@@ -176,8 +177,8 @@ def feature_importance_sfi(
         target_col (str): Target column name.
         sample_weight_col (str, optional): Sample weight column name. Defaults to None.
         n_splits (int, optional): Number of splits for cross-validation. Defaults to 5.
-        purge_size (int, optional): Purge size for Purged K-Fold. Defaults to 0.
-        embargo_size (int, optional): Embargo size for Purged K-Fold. Defaults to 0.
+        purge (int, optional): Purge size for Purged K-Fold. Defaults to 0.
+        embargo (int, optional): Embargo size for Purged K-Fold. Defaults to 0.
         scoring (str, optional): Scoring metric. That are 'neg_log_loss' and 'accuracy'
                                  supported.
                                  Defaults to 'neg_log_loss'.
@@ -201,8 +202,8 @@ def feature_importance_sfi(
             y,
             sample_weight=sample_weight,
             n_splits=n_splits,
-            purge_size=purge_size,
-            embargo_size=embargo_size,
+            purge=purge,
+            embargo=embargo,
             scoring=scoring
         )
 
@@ -211,32 +212,7 @@ def feature_importance_sfi(
         
     return importances
 
-def orthogonal_features(
-    df_X: pd.DataFrame,
-    threshold: float = 0.95
-) -> np.ndarray:
-    """Identify orthogonal features based on correlation threshold.
-    
-    Args:
-        df_X (pd.DataFrame): DataFrame containing feature set.
-        threshold (float, optional): Correlation threshold. Defaults to 0.95.
-        
-    Returns:
-        np.ndarray: Indices of orthogonal features.
-    """
-    
-    df_z = df_X.sub(df_X.mean(), axis=1).div(df_X.std(), axis=1)
-    dot = pd.DataFrame(
-        np.dot(df_z.T, df_z),
-        index=df_X.columns,
-        columns=df_X.columns
-    )
-    eig_vals, eig_vecs = get_e_vec(dot, threshold)
-    df_p = np.dot(df_z, eig_vecs)
-    
-    return df_p
-
-def get_e_vec(dot, threshold) -> tuple[np.ndarray, np.ndarray]:
+def _get_e_vec(dot, threshold) -> tuple[np.ndarray, np.ndarray]:
     """Compute eigen vectors and reduce dimension based on threshold.
     
     Args:
@@ -262,3 +238,50 @@ def get_e_vec(dot, threshold) -> tuple[np.ndarray, np.ndarray]:
     eig_vals, eig_vecs = eig_vals.iloc[:dimension+1], eig_vecs.iloc[:, :dimension+1]
     
     return eig_vals.values, eig_vecs.values
+
+def orthogonal_features(
+    df_X: pd.DataFrame,
+    threshold: float = 0.95
+) -> np.ndarray:
+    """Identify orthogonal features based on correlation threshold.
+    
+    Args:
+        df_X (pd.DataFrame): DataFrame containing feature set.
+        threshold (float, optional): Correlation threshold. Defaults to 0.95.
+        
+    Returns:
+        np.ndarray: Indices of orthogonal features.
+    """
+    
+    df_z = df_X.sub(df_X.mean(), axis=1).div(df_X.std(), axis=1)
+    dot = pd.DataFrame(
+        np.dot(df_z.T, df_z),
+        index=df_X.columns,
+        columns=df_X.columns
+    )
+    eig_vals, eig_vecs = _get_e_vec(dot, threshold)
+    df_p = np.dot(df_z, eig_vecs)
+    
+    return df_p
+
+def stationary_test(
+    series: pd.Series,
+    alpha: float = 0.05
+) -> bool:
+    """Perform ADF and KPSS tests to check stationarity of a time series.
+    
+    Args:
+        series (pd.Series): Time series data.
+        alpha (float, optional): Significance level. Defaults to 0.05.
+        
+    Returns:
+        bool: True if series is stationary, False otherwise.
+    """
+    
+    adf_result = adfuller(series.dropna())
+    kpss_result = kpss(series.dropna(), nlags="auto")
+    
+    adf_stationary = adf_result[1] < alpha
+    kpss_stationary = kpss_result[1] >= alpha
+    
+    return adf_stationary and kpss_stationary

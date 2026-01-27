@@ -9,7 +9,7 @@ from proven_quant.core.feature_selection import (
   feature_importance_mda,
   feature_importance_sfi,
   orthogonal_features,
-  get_e_vec
+  _get_e_vec
 )
 
 
@@ -59,8 +59,8 @@ class TestCvScore:
     """Test cv_score with purge and embargo parameters"""
     X, y, _ = sample_data
     model = LogisticRegression(random_state=42)
-    scores = cv_score(model, X, y, n_splits=3, purge_size=2, 
-             embargo_size=2, scoring='accuracy')
+    scores = cv_score(model, X, y, n_splits=3, purge=2, 
+             embargo=2, scoring='accuracy')
     
     assert len(scores) == 3
   
@@ -254,7 +254,7 @@ class TestGetEVec:
       columns=df.columns
     )
     
-    eig_vals, eig_vecs = get_e_vec(dot, threshold=0.95)
+    eig_vals, eig_vecs = _get_e_vec(dot, threshold=0.95)
     
     assert isinstance(eig_vals, np.ndarray)
     assert isinstance(eig_vecs, np.ndarray)
@@ -272,7 +272,7 @@ class TestGetEVec:
       columns=df.columns
     )
     
-    eig_vals_low, eig_vecs_low = get_e_vec(dot, threshold=0.8)
-    eig_vals_high, eig_vecs_high = get_e_vec(dot, threshold=0.99)
+    eig_vals_low, eig_vecs_low = _get_e_vec(dot, threshold=0.8)
+    eig_vals_high, eig_vecs_high = _get_e_vec(dot, threshold=0.99)
     
     assert len(eig_vals_low) <= len(eig_vals_high)

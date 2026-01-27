@@ -1,10 +1,10 @@
 import numpy as np
 
 class PurgedKFold:
-    def __init__(self, n_splits=5, purge_size=0, embargo_size=0):
+    def __init__(self, n_splits=5, purge=0, embargo=0):
         self.n_splits = n_splits
-        self.purge_size = purge_size
-        self.embargo_size = embargo_size
+        self.purge = purge
+        self.embargo = embargo
         
     def split(self, X):
         n_samples = len(X)
@@ -15,9 +15,10 @@ class PurgedKFold:
         for fold_size in fold_sizes:
             start, stop = current, current + fold_size
             test_indices = np.arange(start, stop)
+            post_gap = max(self.purge, self.embargo)
             train_indices = np.concatenate([
-                np.arange(0, max(0, start - self.purge_size)),
-                np.arange(min(n_samples, stop + self.purge_size), n_samples)
+                np.arange(0, max(0, start - self.purge)),
+                np.arange(min(n_samples, stop + post_gap), n_samples)
             ])
             yield train_indices, test_indices
             current = stop
