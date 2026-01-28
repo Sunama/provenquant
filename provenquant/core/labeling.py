@@ -66,14 +66,32 @@ def add_vertical_barrier_to_horizontal_barrier_events(
         vertical_barrier_time = event_time + vertical_barrier_duration
         if vertical_barrier_time > last_datetime:
             vertical_barrier_time = last_datetime
-        vertical_barriers.append(vertical_barrier_time)
         
+        # Find nearest datetime >= event_time and >= vertical_barrier_time
         if datetime_col == 'index':
+            # Find initial_price (exact match from index)
             initial_price = dataframe.loc[event_time, 'close']
-            final_price = dataframe.loc[vertical_barrier_time, 'close']
+            
+            # Find final_price (nearest datetime >= vertical_barrier_time)
+            idx = dataframe.index.searchsorted(vertical_barrier_time, side='left')
+            if idx >= len(dataframe):
+                idx = len(dataframe) - 1
+            final_price = dataframe.iloc[idx]['close']
+            actual_barrier_time = dataframe.index[idx]
         else:
+            # Find initial_price (exact match from column)
             initial_price = dataframe.loc[dataframe[datetime_col] == event_time, 'close'].values[0]
-            final_price = dataframe.loc[dataframe[datetime_col] == vertical_barrier_time, 'close'].values[0]
+            
+            # Find final_price (nearest datetime >= vertical_barrier_time)
+            sorted_idx = datetimes.searchsorted(vertical_barrier_time, side='left')
+            if sorted_idx >= len(datetimes):
+                sorted_idx = len(datetimes) - 1
+            # Get the actual dataframe index at this position
+            df_idx = datetimes.index[sorted_idx] if hasattr(datetimes, 'index') else sorted_idx
+            final_price = dataframe.iloc[df_idx]['close']
+            actual_barrier_time = datetimes.iloc[sorted_idx]
+        
+        vertical_barriers.append(actual_barrier_time)
         ret = (final_price - initial_price) / initial_price
         rets.append(ret)
 
@@ -138,11 +156,12 @@ def get_triple_barrier_labels(
         datetime_col (str): Name of the datetime column. Defaults to 'index'.
 
     Returns:
-        pd.Series: Series containing triple barrier labels.
+        tuple[pd.Series, pd.Series]: Series containing triple barrier labels and returns.
     """
     
     upper_barrier = threshold * pt
     lower_barrier = -threshold * sl
+    datetimes = dataframe.index if datetime_col == 'index' else dataframe[datetime_col]
     
     labels = []
     rets = []
@@ -160,7 +179,11 @@ def get_triple_barrier_labels(
             if datetime_col == 'index':
                 end_idx = dataframe.index.get_loc(vertical_barrier)
             else:
-                end_idx = dataframe[dataframe[datetime_col] == vertical_barrier].index[0]
+                # Find nearest index >= vertical_barrier
+                sorted_idx = datetimes.searchsorted(vertical_barrier, side='left')
+                if sorted_idx >= len(datetimes):
+                    sorted_idx = len(datetimes) - 1
+                end_idx = datetimes.index[sorted_idx] if hasattr(datetimes, 'index') else sorted_idx
         else:
             end_idx = len(dataframe) - 1
         
@@ -168,11 +191,7 @@ def get_triple_barrier_labels(
         label = 0
         final_ret = 0
         for i in range(event_idx + 1, end_idx + 1):
-            if datetime_col == 'index':
-                current_price = dataframe.iloc[i]['close']
-            else:
-                current_price = dataframe.iloc[i]['close']
-            
+            current_price = dataframe.iloc[i]['close']
             ret = (current_price - initial_price) / initial_price
             final_ret = ret
             
