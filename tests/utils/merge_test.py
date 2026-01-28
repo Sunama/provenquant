@@ -177,3 +177,144 @@ def test_smaller_timeframe_merge_sum_no_matching_data():
     assert result['small_value'].iloc[0] == 0.0
     assert result['small_value'].iloc[1] == 0.0
 
+
+def test_match_merge_dataframe_with_index():
+    """Test match_merge_dataframe using index."""
+    from_df = pd.DataFrame({
+        'value1': [10, 20, 30],
+        'value2': [100, 200, 300]
+    }, index=pd.date_range('2024-01-01', periods=3))
+    
+    to_df = pd.DataFrame({
+        'existing': ['a', 'b', 'c']
+    }, index=pd.date_range('2024-01-01', periods=3))
+    
+    result = match_merge_dataframe(from_df, to_df, ['value1', 'value2'], 'index', 'index')
+    
+    assert 'value1' in result.columns
+    assert 'value2' in result.columns
+    assert list(result['value1']) == [10, 20, 30]
+    assert list(result['value2']) == [100, 200, 300]
+
+
+def test_match_merge_dataframe_mixed_index_and_column():
+    """Test match_merge_dataframe with index on from_df and column on to_df."""
+    from_df = pd.DataFrame({
+        'value': [10, 20, 30]
+    }, index=pd.date_range('2024-01-01', periods=3))
+    
+    to_df = pd.DataFrame({
+        'datetime': pd.date_range('2024-01-01', periods=3),
+        'existing': ['a', 'b', 'c']
+    })
+    
+    result = match_merge_dataframe(from_df, to_df, ['value'], 'index', 'datetime')
+    
+    assert 'value' in result.columns
+    assert list(result['value']) == [10, 20, 30]
+
+
+def test_larger_timeframe_merge_with_index():
+    """Test larger_timeframe_merge_to_smaller_timeframe_dataframe using index."""
+    large_tf_df = pd.DataFrame({
+        'large_value': [100, 200, 300]
+    }, index=pd.to_datetime(['2024-01-01 00:00', '2024-01-01 01:00', '2024-01-01 02:00']))
+    
+    small_tf_df = pd.DataFrame({
+        'small_value': [1, 2, 3, 4, 5]
+    }, index=pd.to_datetime(['2024-01-01 00:00', '2024-01-01 00:30', '2024-01-01 01:00', '2024-01-01 01:30', '2024-01-01 02:00']))
+    
+    result = larger_timeframe_merge_to_smaller_timeframe_dataframe(
+        large_tf_df, small_tf_df, 'index', 'index', ['large_value']
+    )
+    
+    # Check that result maintains original index
+    assert list(result.index) == list(small_tf_df.index)
+    # Check values
+    assert np.isnan(result['large_value'].iloc[0])
+    assert np.isnan(result['large_value'].iloc[1])
+    assert result['large_value'].iloc[2] == 100.0
+    assert result['large_value'].iloc[3] == 100.0
+    assert result['large_value'].iloc[4] == 200.0
+
+
+def test_larger_timeframe_merge_preserves_index():
+    """Test that larger_timeframe_merge_to_smaller_timeframe_dataframe preserves original index."""
+    custom_index = ['row_a', 'row_b', 'row_c', 'row_d', 'row_e']
+    
+    large_tf_df = pd.DataFrame({
+        'datetime': pd.to_datetime(['2024-01-01 00:00', '2024-01-01 01:00', '2024-01-01 02:00']),
+        'large_value': [100, 200, 300]
+    })
+    small_tf_df = pd.DataFrame({
+        'datetime': pd.to_datetime(['2024-01-01 00:00', '2024-01-01 00:30', '2024-01-01 01:00', '2024-01-01 01:30', '2024-01-01 02:00']),
+        'small_value': [1, 2, 3, 4, 5]
+    }, index=custom_index)
+    
+    result = larger_timeframe_merge_to_smaller_timeframe_dataframe(
+        large_tf_df, small_tf_df, 'datetime', 'datetime', ['large_value']
+    )
+    
+    # Check that result maintains original index
+    assert list(result.index) == custom_index
+
+
+def test_smaller_timeframe_merge_sum_with_index():
+    """Test smaller_timeframe_merge_sum_to_larger_timeframe_dataframe using index."""
+    large_tf_df = pd.DataFrame({
+        'large_id': [1, 2]
+    }, index=pd.to_datetime(['2024-01-01 00:00', '2024-01-01 01:00']))
+    
+    small_tf_df = pd.DataFrame({
+        'small_value': [10, 20, 30, 40, 50, 60, 70, 80]
+    }, index=pd.to_datetime(['2024-01-01 00:00', '2024-01-01 00:15', '2024-01-01 00:30', '2024-01-01 00:45',
+                              '2024-01-01 01:00', '2024-01-01 01:15', '2024-01-01 01:30', '2024-01-01 01:45']))
+    
+    result = smaller_timeframe_merge_sum_to_larger_timeframe_dataframe(
+        small_tf_df, large_tf_df, 'index', 'index', ['small_value']
+    )
+    
+    # First interval: [00:00, 01:00) should sum 10+20+30+40 = 100
+    assert result['small_value'].iloc[0] == 100.0
+    # Second interval: [01:00, 02:00) should sum 50+60+70+80 = 260
+    assert result['small_value'].iloc[1] == 260.0
+
+
+def test_smaller_timeframe_merge_sum_with_timezone_aware_index():
+    """Test smaller_timeframe_merge_sum_to_larger_timeframe_dataframe with timezone-aware index."""
+    large_tf_df = pd.DataFrame({
+        'large_id': [1, 2]
+    }, index=pd.to_datetime(['2024-01-01 00:00', '2024-01-01 01:00'], utc=True))
+    
+    small_tf_df = pd.DataFrame({
+        'small_value': [10, 20, 30, 40]
+    }, index=pd.to_datetime(['2024-01-01 00:00', '2024-01-01 00:30', '2024-01-01 01:00', '2024-01-01 01:30'], utc=True))
+    
+    result = smaller_timeframe_merge_sum_to_larger_timeframe_dataframe(
+        small_tf_df, large_tf_df, 'index', 'index', ['small_value']
+    )
+    
+    assert result['small_value'].iloc[0] == 30.0  # 10 + 20
+    assert result['small_value'].iloc[1] == 70.0  # 30 + 40
+
+
+def test_larger_timeframe_merge_with_timezone_aware_mixed():
+    """Test larger_timeframe_merge_to_smaller_timeframe_dataframe with timezone-aware index and column."""
+    large_tf_df = pd.DataFrame({
+        'large_value': [100, 200, 300]
+    }, index=pd.to_datetime(['2024-01-01 00:00', '2024-01-01 01:00', '2024-01-01 02:00'], utc=True))
+    
+    small_tf_df = pd.DataFrame({
+        'datetime': pd.to_datetime(['2024-01-01 00:00', '2024-01-01 00:30', '2024-01-01 01:00', '2024-01-01 01:30', '2024-01-01 02:00'], utc=True),
+        'small_value': [1, 2, 3, 4, 5]
+    })
+    
+    result = larger_timeframe_merge_to_smaller_timeframe_dataframe(
+        large_tf_df, small_tf_df, 'index', 'datetime', ['large_value']
+    )
+    
+    # Check that result can handle timezone-aware datetimes
+    assert np.isnan(result['large_value'].iloc[0])
+    assert np.isnan(result['large_value'].iloc[1])
+    assert result['large_value'].iloc[2] == 100.0
+

@@ -107,6 +107,9 @@ def larger_timeframe_merge_to_smaller_timeframe_dataframe(
     small_df = small_tf_df.copy()
     large_df = large_tf_df.copy()
 
+    # Store original index
+    original_index = small_df.index
+
     # Keep original order, merge on sorted datetimes. We align each small row with the
     # last fully completed large interval to avoid leakage from the in-progress large bar.
     small_df['_orig_order'] = np.arange(len(small_df))
@@ -164,6 +167,7 @@ def larger_timeframe_merge_to_smaller_timeframe_dataframe(
         )
 
     merged = merged.sort_values('_orig_order').drop(columns=['_orig_order', '_available_at'])
+    merged.index = original_index
 
     return merged
 
@@ -201,6 +205,7 @@ def smaller_timeframe_merge_sum_to_larger_timeframe_dataframe(
         small_datetimes = small_df.index.to_series()
 
     # Create intervals for aggregation
+    # Use the Series values directly to preserve timezone information
     large_df['_start'] = large_datetimes.values
     large_df['_end'] = large_datetimes.shift(-1).values
 
@@ -219,12 +224,15 @@ def smaller_timeframe_merge_sum_to_larger_timeframe_dataframe(
 
     aggregated_data = {col: [] for col in small_tf_cols}
 
+    # Extract datetime values for comparison (convert to same type for comparison)
+    small_dt_values = small_datetimes.values if small_tf_datetime_col != 'index' else small_datetimes.values
+    
     for _, large_row in large_df.iterrows():
         start = large_row['_start']
         end = large_row['_end']
 
-        # Include data >= start and < end
-        mask = (small_datetimes >= start) & (small_datetimes < end)
+        # Include data >= start and < end (use values for comparison to handle timezone properly)
+        mask = (small_dt_values >= start) & (small_dt_values < end)
         for col in small_tf_cols:
             aggregated_value = small_df.loc[mask, col].sum()
             aggregated_data[col].append(aggregated_value)
