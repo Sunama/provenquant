@@ -66,8 +66,8 @@ def get_dollar_bars(
                 'volume': bar_volume,
                 'cum_ticks': cum_ticks,
                 'cum_dollar': cum_dollar_value,
-                'cum_buy_volume': cum_buy_volume,
-                'cum_sell_volume': cum_sell_volume,
+                'buy_volume': cum_buy_volume,
+                'sell_volume': cum_sell_volume,
                 'end_date': idx
             })
             cum_dollar_value = 0.0
@@ -174,8 +174,8 @@ def get_dollar_imbalance_bars(
                 'volume': bar_volume,
                 'cum_ticks': cum_ticks,
                 'cum_dollar': cum_dollar_value,
-                'cum_buy_volume': cum_buy_volume,
-                'cum_sell_volume': cum_sell_volume,
+                'buy_volume': cum_buy_volume,
+                'sell_volume': cum_sell_volume,
                 'end_date': idx
             })
             cum_imbalance = 0.0
@@ -259,8 +259,8 @@ def get_tick_bars(
                 'volume': cum_volume,
                 'cum_ticks': tick_count,
                 'cum_dollar': cum_dollar_value,
-                'cum_buy_volume': cum_buy_volume,
-                'cum_sell_volume': cum_sell_volume,
+                'buy_volume': cum_buy_volume,
+                'sell_volume': cum_sell_volume,
                 'end_date': idx
             })
             tick_count = 0
@@ -343,8 +343,8 @@ def get_volume_bars(
                 'volume': cum_volume,
                 'cum_ticks': cum_ticks,
                 'cum_dollar': cum_dollar_value,
-                'cum_buy_volume': cum_buy_volume,
-                'cum_sell_volume': cum_sell_volume,
+                'buy_volume': cum_buy_volume,
+                'sell_volume': cum_sell_volume,
                 'end_date': idx
             })
             cum_volume = 0.0
@@ -451,8 +451,8 @@ def get_volume_imbalance_bars(
                 'volume': bar_volume,
                 'cum_ticks': cum_ticks,
                 'cum_dollar': cum_dollar_value,
-                'cum_buy_volume': cum_buy_volume,
-                'cum_sell_volume': cum_sell_volume,
+                'buy_volume': cum_buy_volume,
+                'sell_volume': cum_sell_volume,
                 'end_date': idx
             })
             cum_imbalance = 0.0
