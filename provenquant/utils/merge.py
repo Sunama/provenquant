@@ -124,7 +124,7 @@ def larger_timeframe_merge_to_smaller_timeframe_dataframe(
     else:
         large_sorted = large_df.sort_index().copy()
         # A large bar's value becomes available only at the start of the next large bar.
-        large_sorted['_available_at'] = large_sorted.index.to_series().shift(-1).values
+        large_sorted['_available_at'] = large_sorted.index.to_series().shift(-1)
     
     # Drop the last large bar because it has no subsequent timestamp (not completed yet).
     large_ready = large_sorted.dropna(subset=['_available_at'])
