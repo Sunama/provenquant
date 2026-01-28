@@ -14,16 +14,24 @@ def match_merge_dataframe(
         from_df (pd.DataFrame): DataFrame to merge data from.
         to_df (pd.DataFrame): DataFrame to merge data into.
         from_cols (list): List of column names to merge from from_df.
-        from_datetime_col (str): Datetime column name in from_df.
-        to_datetime_col (str): Datetime column name in to_df.
+        from_datetime_col (str): Datetime column name in from_df, or 'index' to use the index.
+        to_datetime_col (str): Datetime column name in to_df, or 'index' to use the index.
 
     Returns:
         pd.DataFrame: Merged DataFrame with selected columns from from_df.
     """
     merged_data = {col: [] for col in from_cols}
 
-    from_datetimes = from_df[from_datetime_col].values
-    to_datetimes = to_df[to_datetime_col].values
+    # Get datetime values from column or index
+    if from_datetime_col != 'index':
+        from_datetimes = from_df[from_datetime_col].values
+    else:
+        from_datetimes = from_df.index.values
+    
+    if to_datetime_col != 'index':
+        to_datetimes = to_df[to_datetime_col].values
+    else:
+        to_datetimes = to_df.index.values
 
     for to_dt in to_datetimes:
         mask = from_datetimes == to_dt
@@ -89,8 +97,8 @@ def larger_timeframe_merge_to_smaller_timeframe_dataframe(
     Args:
         large_tf_df (pd.DataFrame): DataFrame with larger timeframe data.
         small_tf_df (pd.DataFrame): DataFrame with smaller timeframe data.
-        large_tf_datetime_col (str): Datetime column name in large_tf_df.
-        small_tf_datetime_col (str): Datetime column name in small_tf_df.
+        large_tf_datetime_col (str): Datetime column name in large_tf_df, or 'index' to use the index.
+        small_tf_datetime_col (str): Datetime column name in small_tf_df, or 'index' to use the index.
         large_tf_cols (list): List of column names to merge from large_tf_df.
 
     Returns:
@@ -102,22 +110,58 @@ def larger_timeframe_merge_to_smaller_timeframe_dataframe(
     # Keep original order, merge on sorted datetimes. We align each small row with the
     # last fully completed large interval to avoid leakage from the in-progress large bar.
     small_df['_orig_order'] = np.arange(len(small_df))
-    small_sorted = small_df.sort_values(small_tf_datetime_col)
+    
+    # Sort based on whether datetime is in column or index
+    if small_tf_datetime_col != 'index':
+        small_sorted = small_df.sort_values(small_tf_datetime_col)
+    else:
+        small_sorted = small_df.sort_index()
 
-    large_sorted = large_df.sort_values(large_tf_datetime_col).copy()
-    # A large bar's value becomes available only at the start of the next large bar.
-    large_sorted['_available_at'] = large_sorted[large_tf_datetime_col].shift(-1)
+    if large_tf_datetime_col != 'index':
+        large_sorted = large_df.sort_values(large_tf_datetime_col).copy()
+        # A large bar's value becomes available only at the start of the next large bar.
+        large_sorted['_available_at'] = large_sorted[large_tf_datetime_col].shift(-1)
+    else:
+        large_sorted = large_df.sort_index().copy()
+        # A large bar's value becomes available only at the start of the next large bar.
+        large_sorted['_available_at'] = large_sorted.index.to_series().shift(-1).values
+    
     # Drop the last large bar because it has no subsequent timestamp (not completed yet).
     large_ready = large_sorted.dropna(subset=['_available_at'])
 
-    merged = pd.merge_asof(
-        small_sorted,
-        large_ready[['_available_at'] + large_tf_cols],
-        left_on=small_tf_datetime_col,
-        right_on='_available_at',
-        direction='backward',
-        allow_exact_matches=True,
-    )
+    # Determine the key column to merge on
+    if small_tf_datetime_col != 'index':
+        left_on = small_tf_datetime_col
+    else:
+        left_on = None
+        small_sorted = small_sorted.reset_index()
+        
+    if large_tf_datetime_col != 'index':
+        right_on = '_available_at'
+    else:
+        right_on = '_available_at'
+
+    if left_on is None:
+        # Using index for small_tf
+        small_sorted_reset = small_sorted
+        merged = pd.merge_asof(
+            small_sorted_reset.rename(columns={'index': '_small_dt'}),
+            large_ready[['_available_at'] + large_tf_cols],
+            left_on='_small_dt',
+            right_on=right_on,
+            direction='backward',
+            allow_exact_matches=True,
+        )
+        merged = merged.drop(columns=['_small_dt'])
+    else:
+        merged = pd.merge_asof(
+            small_sorted,
+            large_ready[['_available_at'] + large_tf_cols],
+            left_on=left_on,
+            right_on=right_on,
+            direction='backward',
+            allow_exact_matches=True,
+        )
 
     merged = merged.sort_values('_orig_order').drop(columns=['_orig_order', '_available_at'])
 
@@ -135,8 +179,8 @@ def smaller_timeframe_merge_sum_to_larger_timeframe_dataframe(
     Args:
         small_tf_df (pd.DataFrame): DataFrame with smaller timeframe data.
         large_tf_df (pd.DataFrame): DataFrame with larger timeframe data.
-        small_tf_datetime_col (str): Datetime column name in small_tf_df.
-        large_tf_datetime_col (str): Datetime column name in large_tf_df.
+        small_tf_datetime_col (str): Datetime column name in small_tf_df, or 'index' to use the index.
+        large_tf_datetime_col (str): Datetime column name in large_tf_df, or 'index' to use the index.
         small_tf_cols (list): List of column names to aggregate from small_tf_df.
 
     Returns:
@@ -145,12 +189,23 @@ def smaller_timeframe_merge_sum_to_larger_timeframe_dataframe(
     large_df = large_tf_df.copy()
     small_df = small_tf_df.copy()
 
+    # Get datetime values from column or index
+    if large_tf_datetime_col != 'index':
+        large_datetimes = large_df[large_tf_datetime_col]
+    else:
+        large_datetimes = large_df.index.to_series()
+    
+    if small_tf_datetime_col != 'index':
+        small_datetimes = small_df[small_tf_datetime_col]
+    else:
+        small_datetimes = small_df.index.to_series()
+
     # Create intervals for aggregation
-    large_df['_start'] = large_df[large_tf_datetime_col]
-    large_df['_end'] = large_df[large_tf_datetime_col].shift(-1)
+    large_df['_start'] = large_datetimes.values
+    large_df['_end'] = large_datetimes.shift(-1).values
 
     # Infer a reasonable end for the last interval using the typical large timeframe frequency
-    diffs = large_df[large_tf_datetime_col].diff().dropna()
+    diffs = large_datetimes.diff().dropna()
     if len(diffs) > 0:
         try:
             # Prefer mode if regular; fallback to median
@@ -169,7 +224,7 @@ def smaller_timeframe_merge_sum_to_larger_timeframe_dataframe(
         end = large_row['_end']
 
         # Include data >= start and < end
-        mask = (small_df[small_tf_datetime_col] >= start) & (small_df[small_tf_datetime_col] < end)
+        mask = (small_datetimes >= start) & (small_datetimes < end)
         for col in small_tf_cols:
             aggregated_value = small_df.loc[mask, col].sum()
             aggregated_data[col].append(aggregated_value)

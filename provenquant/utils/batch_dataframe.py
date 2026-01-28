@@ -35,14 +35,14 @@ class BatchDataframe:
     
     def load_dataframe(
         self,
-        from_datetime: pd.Timestamp,
-        to_datetime: pd.Timestamp,
+        start_datetime: pd.Timestamp,
+        end_datetime: pd.Timestamp,
     ) -> pd.DataFrame:
         """Load DataFrame from disk in batches based on datetime range.
         
         Args:
-            from_datetime (pd.Timestamp): Start datetime for loading data.
-            to_datetime (pd.Timestamp): End datetime for loading data.
+            start_datetime (pd.Timestamp): Start datetime for loading data.
+            end_datetime (pd.Timestamp): End datetime for loading data.
         
         Returns:
             pd.DataFrame: Loaded DataFrame within the specified datetime range.
@@ -60,14 +60,14 @@ class BatchDataframe:
                     batch_min = batch_df.index.min()
                     batch_max = batch_df.index.max()
                     # If batch overlaps with requested range, include it
-                    if batch_max >= from_datetime and batch_min <= to_datetime:
+                    if batch_max >= start_datetime and batch_min <= end_datetime:
                         dataframes.append(batch_df)
             except Exception:
                 pass
         
         if dataframes:
             df = pd.concat(dataframes).sort_index()
-            mask = (df.index >= from_datetime) & (df.index <= to_datetime)
+            mask = (df.index >= start_datetime) & (df.index <= end_datetime)
             
             return df.loc[mask]
         else:
