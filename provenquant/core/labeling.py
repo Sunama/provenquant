@@ -1,219 +1,105 @@
 import pandas as pd
 import numpy as np
 
-def get_horizontal_barrier_events(
+def filtrate_tripple_label_barrier(
     dataframe: pd.DataFrame,
-    threshold: float,
+    cusum_threshold: float,
+    vertical_barrier: int,
     datetime_col: str = 'index',
 ) -> pd.DataFrame:
-    """Reduce dataframe by use CUSUM filter to get horizontal barrier events.
+    """Filtrate triple barrier labels from raw DataFrame.
+       Use this function before applying triple barrier labeling or in
+       production based that we don't need labels and returns yet.
 
     Args:
-        dataframe (pd.DataFrame): DataFrame that contains close prices.
-        threshold (float): Volatility threshold for CUSUM filter in percentage.
+        dataframe (pd.DataFrame): Raw DataFrame that contains close prices.
+        cusum_threshold (float): Threshold for CUSUM filter in percentage.
+        vertical_barrier (int): Ticks for vertical barrier.
         datetime_col (str): Name of the datetime column. Defaults to 'index'.
 
     Returns:
-        pd.DataFrame: DataFrame with horizontal barrier events.
+        pd.DataFrame: DataFrame with t1.
     """
+    # CUSUM Filter
+    if datetime_col != 'index':
+        close_prices = dataframe.set_index(datetime_col)['close']
+    else:
+        close_prices = dataframe['close']
     
-    pct_changes = dataframe['close'].pct_change()
-    datetimes = dataframe.index if datetime_col == 'index' else dataframe[datetime_col]
+    diff = close_prices.pct_change().dropna()
+    
+    pos_cusum, neg_cusum = 0, 0
     t_events = []
-    s_pos, s_neg = 0, 0
-
-    for i in range(1, len(pct_changes)):
-        pct_change = pct_changes.iloc[i]
-        s_pos = max(0, s_pos + pct_change)
-        s_neg = min(0, s_neg + pct_change)
-
-        if s_pos > threshold:
-            t_events.append(datetimes[i])
-            s_pos = 0
-        elif s_neg < -threshold:
-            t_events.append(datetimes[i])
-            s_neg = 0
-
-    events = pd.DataFrame(index=t_events)
+    for idx in diff.index[1:]:
+        pos_cusum = max(0, pos_cusum + diff.loc[idx])
+        neg_cusum = min(0, neg_cusum + diff.loc[idx])
+        
+        if pos_cusum > cusum_threshold:
+            t_events.append(idx)
+            pos_cusum = 0
+        elif neg_cusum < -cusum_threshold:
+            t_events.append(idx)
+            neg_cusum = 0
+    t_events = pd.DatetimeIndex(t_events)
     
-    return events
+    # Vertical Barrier
+    # Build t1 values using a list first, then create Series with proper dtype
+    t1_values = []
+    for event_time in t_events:
+        t1_value = close_prices.index[
+            close_prices.index.get_loc(event_time) + vertical_barrier
+            ] if (close_prices.index.get_loc(event_time) + vertical_barrier) < len(close_prices) else close_prices.index[-1]
+        t1_values.append(t1_value)
+    
+    t1 = pd.Series(t1_values, index=t_events, dtype=close_prices.index.dtype)
+    df = pd.DataFrame(index=t_events)
+    df['t1'] = t1
+    
+    # Add another columns in dataframe to df
+    for col in dataframe.columns:
+        if col != datetime_col:
+            df[col] = dataframe.set_index(datetime_col).loc[t_events][col]
+    
+    return df
 
-def add_vertical_barrier_to_horizontal_barrier_events(
+def get_tripple_label_barrier(
     dataframe: pd.DataFrame,
-    events: pd.DataFrame,
-    vertical_barrier_duration: pd.Timedelta,
-    datetime_col: str = 'index',
+    close_series: pd.Series,
+    min_return: float = 0.0,
 ) -> pd.DataFrame:
-    """Add vertical barrier to horizontal barrier events.
+    """Get triple barrier labels from DataFrame with t1.
 
     Args:
-        dataframe (pd.DataFrame): Raw DataFrame that contains close prices.
-        events (pd.DataFrame): horizontal barrier events.
-        vertical_barrier_duration (pd.Timedelta): Duration for vertical barrier.
-        datetime_col (str): Name of the datetime column. Defaults to 'index'.
-
-    Returns:
-        pd.DataFrame: DataFrame with vertical_barrier and ret added to events.
-    """
-    
-    datetimes = dataframe.index if datetime_col == 'index' else dataframe[datetime_col]
-    last_datetime = datetimes[-1] if datetime_col == 'index' else datetimes.iloc[-1]
-    
-    rets = []
-    vertical_barriers = []
-
-    for event_time in events.index:
-        vertical_barrier_time = event_time + vertical_barrier_duration
-        if vertical_barrier_time > last_datetime:
-            vertical_barrier_time = last_datetime
+        dataframe (pd.DataFrame): DataFrame with t1.
+        close_series (pd.Series): Series of close prices that have datetime index.
+        min_return (float): Minimum return threshold to assign labels. Defaults to 0.0.
         
-        # Find nearest datetime >= event_time and >= vertical_barrier_time
-        if datetime_col == 'index':
-            # Find initial_price (exact match from index)
-            initial_price = dataframe.loc[event_time, 'close']
-            
-            # Find final_price (nearest datetime >= vertical_barrier_time)
-            idx = dataframe.index.searchsorted(vertical_barrier_time, side='left')
-            if idx >= len(dataframe):
-                idx = len(dataframe) - 1
-            final_price = dataframe.iloc[idx]['close']
-            actual_barrier_time = dataframe.index[idx]
-        else:
-            # Find initial_price (exact match from column)
-            initial_price = dataframe.loc[dataframe[datetime_col] == event_time, 'close'].values[0]
-            
-            # Find final_price (nearest datetime >= vertical_barrier_time)
-            sorted_idx = datetimes.searchsorted(vertical_barrier_time, side='left')
-            if sorted_idx >= len(datetimes):
-                sorted_idx = len(datetimes) - 1
-            # Get the actual dataframe index at this position
-            df_idx = datetimes.index[sorted_idx] if hasattr(datetimes, 'index') else sorted_idx
-            final_price = dataframe.iloc[df_idx]['close']
-            actual_barrier_time = datetimes.iloc[sorted_idx]
-        
-        vertical_barriers.append(actual_barrier_time)
-        ret = (final_price - initial_price) / initial_price
-        rets.append(ret)
-
-    events['vertical_barrier'] = vertical_barriers
-    events['ret'] = rets
-    
-    return events
-
-def get_binary_labels(
-    events: pd.DataFrame,
-    min_ret: float = 0.0,
-    side: str = 'long',
-) -> pd.Series:
-    """Get binary labels from events DataFrame.
-
-    Args:
-        events (pd.DataFrame): DataFrame with 'ret' column.
-        min_ret (float): Minimum return to consider for labeling.
-        side (str): 'long' or 'short' to indicate the trade side.
-                    Defaults to 'long'.
     Returns:
-        pd.Series: Series containing binary labels.
+        pd.DataFrame: DataFrame with labels and returns.
     """
-    
-    if side not in ('long', 'short'):
-        raise ValueError("side must be either 'long' or 'short'")
-
     labels = []
-    for ret in events['ret']:
-        if abs(ret) < min_ret:
+    returns = []
+    
+    for event_time, row in dataframe.iterrows():
+        t1 = row['t1']
+        if pd.isna(t1):
             labels.append(0)
+            returns.append(0)
             continue
-
-        if side == 'long':
-            label = 1 if ret > 0 else 0
-        else:  # side == 'short'
-            label = 1 if ret < 0 else 0
-
-        labels.append(label)
         
-    return pd.Series(labels, index=events.index)
-
-def get_triple_barrier_labels(
-    dataframe: pd.DataFrame,
-    events: pd.DataFrame,
-    threshold: float,
-    pt: float,
-    sl: float,
-    side: str = 'long',
-    datetime_col: str = 'index',
-) -> tuple[pd.Series, pd.Series]:
-    """Get triple barrier labels from events DataFrame.
-
-    Args:
-        dataframe (pd.DataFrame): Raw DataFrame that contains close prices.
-        events (pd.DataFrame): DataFrame with event times.
-        threshold (float): Threshold for determining significant returns.
-        pt (float): Multiple of threshold for profit-taking barrier.
-        sl (float): Multiple of threshold for stop-loss barrier.
-        side (str): 'long' or 'short' to indicate the trade side.
-                    Defaults to 'long'.
-        datetime_col (str): Name of the datetime column. Defaults to 'index'.
-
-    Returns:
-        tuple[pd.Series, pd.Series]: Series containing triple barrier labels and returns.
-    """
-    
-    upper_barrier = threshold * pt
-    lower_barrier = -threshold * sl
-    datetimes = dataframe.index if datetime_col == 'index' else dataframe[datetime_col]
-    
-    labels = []
-    rets = []
-    for event_time in events.index:
-        if datetime_col == 'index':
-            initial_price = dataframe.loc[event_time, 'close']
-            event_idx = dataframe.index.get_loc(event_time)
+        start_price = close_series.loc[event_time]
+        end_price = close_series.loc[t1]
+        ret = (end_price - start_price) / start_price
+        returns.append(ret)
+        
+        if ret > min_return:
+            labels.append(1)
+        elif ret < -min_return:
+            labels.append(-1)
         else:
-            initial_price = dataframe.loc[dataframe[datetime_col] == event_time, 'close'].values[0]
-            event_idx = dataframe[dataframe[datetime_col] == event_time].index[0]
-        
-        # Get vertical barrier time if available
-        if 'vertical_barrier' in events.columns:
-            vertical_barrier = events.loc[event_time, 'vertical_barrier']
-            if datetime_col == 'index':
-                end_idx = dataframe.index.get_loc(vertical_barrier)
-            else:
-                # Find nearest index >= vertical_barrier
-                sorted_idx = datetimes.searchsorted(vertical_barrier, side='left')
-                if sorted_idx >= len(datetimes):
-                    sorted_idx = len(datetimes) - 1
-                end_idx = datetimes.index[sorted_idx] if hasattr(datetimes, 'index') else sorted_idx
-        else:
-            end_idx = len(dataframe) - 1
-        
-        # Scan through prices until hitting a barrier or vertical barrier
-        label = 0
-        final_ret = 0
-        for i in range(event_idx + 1, end_idx + 1):
-            current_price = dataframe.iloc[i]['close']
-            ret = (current_price - initial_price) / initial_price
-            final_ret = ret
-            
-            if side == 'long':
-                if ret >= upper_barrier:
-                    label = 1
-                    break
-                elif ret <= lower_barrier:
-                    label = -1
-                    break
-            elif side == 'short':
-                if ret <= -upper_barrier:
-                    label = 1
-                    break
-                elif ret >= -lower_barrier:
-                    label = -1
-                    break
-            else:
-                raise ValueError("side must be either 'long' or 'short'")
-        
-        labels.append(label)
-        rets.append(final_ret)
-        
-    return pd.Series(labels, index=events.index), pd.Series(rets, index=events.index)
-
+            labels.append(0)
+    
+    dataframe['label'] = labels
+    dataframe['return'] = returns
+    
+    return dataframe

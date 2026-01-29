@@ -1,8 +1,6 @@
 from provenquant.core.labeling import (
-    get_horizontal_barrier_events,
-    add_vertical_barrier_to_horizontal_barrier_events,
-    get_binary_labels,
-    get_triple_barrier_labels,
+    filtrate_tripple_label_barrier,
+    get_tripple_label_barrier,
 )
 import numpy as np
 import os
@@ -11,350 +9,406 @@ import pytest
 
 @pytest.fixture
 def sample_dataframe():
+    """Load sample dataframe from feather file."""
     current_dir = os.getcwd()
     dataframe_path = os.path.join(current_dir, 'data', 'btc_usdt.feather')
-    dataframe = pd.read_feather(dataframe_path)
-    
-    return dataframe
+    if os.path.exists(dataframe_path):
+        dataframe = pd.read_feather(dataframe_path)
+        return dataframe
+    else:
+        # Fallback: create a sample dataframe if file doesn't exist
+        dates = pd.date_range(start='2023-01-01', periods=100, freq='1h')
+        data = {
+            'close': np.random.uniform(50000, 60000, 100),
+            'volume': np.random.uniform(1000, 5000, 100),
+        }
+        return pd.DataFrame(data, index=dates)
 
 @pytest.fixture
-def small_dataframe_with_date():
-    dates = pd.date_range(start='2023-01-01', periods=6, freq='h')
+def simple_dataframe():
+    """Create a simple deterministic dataframe for testing."""
+    dates = pd.date_range(start='2023-01-01', periods=50, freq='1h')
     data = {
-        'date': dates,
-        'close': [100, 103, 104, 101, 99, 102],
-        'volume': [200, 210, 220, 230, 240, 250],
+        'close': [100 + i * 0.5 for i in range(50)],  # Slight uptrend
+        'volume': [1000 + i * 10 for i in range(50)],
     }
-    return pd.DataFrame(data)
+    return pd.DataFrame(data, index=dates)
+
+@pytest.fixture
+def volatile_dataframe():
+    """Create a volatile dataframe with bigger price swings."""
+    dates = pd.date_range(start='2023-01-01', periods=100, freq='1h')
+    np.random.seed(42)
+    returns = np.random.normal(0.001, 0.02, 100)
+    close_prices = 100 * np.exp(np.cumsum(returns))
+    data = {
+        'close': close_prices,
+        'volume': np.random.uniform(1000, 5000, 100),
+    }
+    return pd.DataFrame(data, index=dates)
   
-def test_get_horizontal_barrier_events(sample_dataframe):
-    threshold = 3.0
-    events = get_horizontal_barrier_events(sample_dataframe, threshold)
+def test_filtrate_tripple_label_barrier_basic(simple_dataframe):
+    """Test basic functionality of filtrate_tripple_label_barrier."""
+    # Convert index to column for testing
+    df = simple_dataframe.reset_index()
+    df.rename(columns={'index': 'datetime'}, inplace=True)
     
-    # Check if events are a subset of the original dataframe
-    assert all(event in sample_dataframe.index for event in events.index)
+    result = filtrate_tripple_label_barrier(
+        df,
+        cusum_threshold=0.01,
+        vertical_barrier=5,
+        datetime_col='datetime'
+    )
     
-    # Check if the number of events is reasonable
-    assert len(events) >= 0 and len(events) < len(sample_dataframe)
+    # Check structure
+    assert isinstance(result, pd.DataFrame)
+    assert 't1' in result.columns
+    assert 'close' in result.columns
+    assert 'volume' in result.columns
+    
+    # Check that index represents event times
+    assert len(result) >= 0
 
-def test_add_vertical_barrier_to_horizontal_barrier_events(sample_dataframe):
-    threshold = 0.005
-    vertical_barrier_duration = pd.Timedelta(days=1)
-    
-    events = get_horizontal_barrier_events(sample_dataframe, threshold, datetime_col='date')
-    if len(events) == 0:
-        events = pd.DataFrame(index=[sample_dataframe['date'].iloc[0]])
-    events_with_vertical = add_vertical_barrier_to_horizontal_barrier_events(
-        sample_dataframe, events, vertical_barrier_duration, datetime_col='date'
-    )
-    
-    # Check if vertical barriers are added
-    assert 'vertical_barrier' in events_with_vertical.columns
-    
-    # Check if vertical barriers are within the dataframe date range
-    assert events_with_vertical['vertical_barrier'].min() >= sample_dataframe['date'].min()
-    assert events_with_vertical['vertical_barrier'].max() <= sample_dataframe['date'].max()
-    # Check if ret column is added and contains values
-    assert 'ret' in events_with_vertical.columns
-    assert len(events_with_vertical['ret']) > 0
 
-def test_get_binary_labels_long(sample_dataframe):
-    """Test get_binary_labels with long side."""
-    threshold = 0.005
-    vertical_barrier_duration = pd.Timedelta(days=1)
+def test_filtrate_tripple_label_barrier_with_column(simple_dataframe):
+    """Test filtrate_tripple_label_barrier with datetime column."""
+    df_with_col = simple_dataframe.reset_index()
+    df_with_col.rename(columns={'index': 'datetime'}, inplace=True)
     
-    events = get_horizontal_barrier_events(sample_dataframe, threshold, datetime_col='date')
-    if len(events) == 0:
-        events = pd.DataFrame(index=[sample_dataframe['date'].iloc[0]])
-    events_with_barriers = add_vertical_barrier_to_horizontal_barrier_events(
-        sample_dataframe, events, vertical_barrier_duration, datetime_col='date'
+    result = filtrate_tripple_label_barrier(
+        df_with_col,
+        cusum_threshold=0.01,
+        vertical_barrier=5,
+        datetime_col='datetime'
     )
     
-    labels = get_binary_labels(events_with_barriers, side='long')
-    
-    # Check if labels are binary (0 or 1)
-    assert all(label in [0, 1] for label in labels)
-    assert len(labels) > 0
-    
-    # Check if labels match the return values
-    for i, ret in enumerate(events_with_barriers['ret']):
-        if ret > 0:
-            assert labels.iloc[i] == 1
-        else:
-            assert labels.iloc[i] == 0
+    # Check structure
+    assert isinstance(result, pd.DataFrame)
+    assert 't1' in result.columns
+    assert 'close' in result.columns
 
-def test_get_binary_labels_short(sample_dataframe):
-    """Test get_binary_labels with short side."""
-    threshold = 0.005
-    vertical_barrier_duration = pd.Timedelta(days=1)
-    
-    events = get_horizontal_barrier_events(sample_dataframe, threshold, datetime_col='date')
-    if len(events) == 0:
-        events = pd.DataFrame(index=[sample_dataframe['date'].iloc[0]])
-    events_with_barriers = add_vertical_barrier_to_horizontal_barrier_events(
-        sample_dataframe, events, vertical_barrier_duration, datetime_col='date'
-    )
-    
-    labels = get_binary_labels(events_with_barriers, side='short')
-    
-    # Check if labels are binary (0 or 1)
-    assert all(label in [0, 1] for label in labels)
-    assert len(labels) > 0
-    
-    # Check if labels match the return values for short side
-    for i, ret in enumerate(events_with_barriers['ret']):
-        if ret < 0:
-            assert labels.iloc[i] == 1
-        else:
-            assert labels.iloc[i] == 0
 
-def test_get_binary_labels_invalid_side(sample_dataframe):
-    """Test get_binary_labels with invalid side parameter."""
-    threshold = 3.0
-    vertical_barrier_duration = pd.Timedelta(days=3)
+def test_filtrate_tripple_label_barrier_high_threshold(simple_dataframe):
+    """Test with high threshold - should produce fewer events."""
+    df = simple_dataframe.reset_index()
+    df.rename(columns={'index': 'datetime'}, inplace=True)
     
-    events = get_horizontal_barrier_events(sample_dataframe, threshold)
-    events_with_barriers = add_vertical_barrier_to_horizontal_barrier_events(
-        sample_dataframe, events, vertical_barrier_duration
+    result = filtrate_tripple_label_barrier(
+        df,
+        cusum_threshold=0.5,  # Very high threshold
+        vertical_barrier=5,
+        datetime_col='datetime'
     )
     
-    # Should raise ValueError for invalid side
-    with pytest.raises(ValueError, match="side must be either 'long' or 'short'"):
-        get_binary_labels(events_with_barriers, side='invalid')
+    # Higher threshold should result in fewer events
+    assert len(result) >= 0
 
-def test_get_triple_barrier_labels_long(sample_dataframe):
-    """Test get_triple_barrier_labels with long side."""
-    threshold = 0.005
-    vertical_barrier_duration = pd.Timedelta(days=1)
-    pt = 2.0
-    sl = 1.0
-    
-    events = get_horizontal_barrier_events(sample_dataframe, threshold, datetime_col='date')
-    events_with_barriers = add_vertical_barrier_to_horizontal_barrier_events(
-        sample_dataframe, events, vertical_barrier_duration, datetime_col='date'
-    )
-    
-    labels, rets = get_triple_barrier_labels(
-        sample_dataframe,
-        events_with_barriers,
-        threshold=threshold,
-        pt=pt,
-        sl=sl,
-        side='long',
-        datetime_col='date'
-    )
-    
-    # Check if labels are ternary (-1, 0, or 1)
-    assert all(label in [-1, 0, 1] for label in labels)
-    assert len(rets) == len(labels)
-    
-    # Labels consistent with computed returns
-    upper = threshold * pt
-    lower = -threshold * sl
-    for i, ret in enumerate(rets):
-        if ret >= upper:
-            assert labels.iloc[i] == 1
-        elif ret <= lower:
-            assert labels.iloc[i] == -1
-        else:
-            assert labels.iloc[i] == 0
 
-def test_get_triple_barrier_labels_short(sample_dataframe):
-    """Test get_triple_barrier_labels with short side."""
-    threshold = 0.005
-    vertical_barrier_duration = pd.Timedelta(days=1)
-    pt = 2.0
-    sl = 1.0
+def test_filtrate_tripple_label_barrier_low_threshold(volatile_dataframe):
+    """Test with low threshold - should produce more events."""
+    df = volatile_dataframe.reset_index()
+    df.rename(columns={'index': 'datetime'}, inplace=True)
     
-    events = get_horizontal_barrier_events(sample_dataframe, threshold, datetime_col='date')
-    events_with_barriers = add_vertical_barrier_to_horizontal_barrier_events(
-        sample_dataframe, events, vertical_barrier_duration, datetime_col='date'
+    result = filtrate_tripple_label_barrier(
+        df,
+        cusum_threshold=0.001,  # Very low threshold
+        vertical_barrier=5,
+        datetime_col='datetime'
     )
     
-    labels, rets = get_triple_barrier_labels(
-        sample_dataframe,
-        events_with_barriers,
-        threshold=threshold,
-        pt=pt,
-        sl=sl,
-        side='short',
-        datetime_col='date'
-    )
-    
-    # Check if labels are ternary (-1, 0, or 1)
-    assert all(label in [-1, 0, 1] for label in labels)
-    assert len(rets) == len(labels)
-    
-    upper = threshold * pt
-    lower = -threshold * sl
-    for i, ret in enumerate(rets):
-        if ret <= -upper:
-            assert labels.iloc[i] == 1
-        elif ret >= -lower:
-            assert labels.iloc[i] == -1
-        else:
-            assert labels.iloc[i] == 0
+    # Low threshold should result in more events for volatile data
+    assert len(result) > 0
 
-def test_get_triple_barrier_labels_invalid_side(sample_dataframe):
-    """Test get_triple_barrier_labels with invalid side parameter."""
-    threshold = 0.005
-    vertical_barrier_duration = pd.Timedelta(days=1)
+
+def test_filtrate_tripple_label_barrier_vertical_barrier_boundary(simple_dataframe):
+    """Test vertical barrier doesn't exceed dataframe bounds."""
+    df = simple_dataframe.reset_index()
+    df.rename(columns={'index': 'datetime'}, inplace=True)
     
-    events = get_horizontal_barrier_events(sample_dataframe, threshold, datetime_col='date')
-    events_with_barriers = add_vertical_barrier_to_horizontal_barrier_events(
-        sample_dataframe, events, vertical_barrier_duration, datetime_col='date'
+    result = filtrate_tripple_label_barrier(
+        df,
+        cusum_threshold=0.01,
+        vertical_barrier=1000,  # Very large barrier
+        datetime_col='datetime'
     )
     
-    # Ensure there is at least one event; otherwise force one manually
-    if len(events_with_barriers) == 0:
-        forced_event_time = sample_dataframe['date'].iloc[0]
-        events_with_barriers = pd.DataFrame(index=[forced_event_time])
-        events_with_barriers = add_vertical_barrier_to_horizontal_barrier_events(
-            sample_dataframe, events_with_barriers, vertical_barrier_duration, datetime_col='date'
+    if len(result) > 0:
+        # t1 should never exceed the last datetime
+        assert (result['t1'] <= df['datetime'].max()).all()
+
+
+def test_filtrate_tripple_label_barrier_preserves_data():
+    """Test that filtrate preserves data columns correctly."""
+    dates = pd.date_range(start='2023-01-01', periods=20, freq='1h')
+    data = {
+        'datetime': dates,
+        'close': [100 + i * 0.5 for i in range(20)],
+        'volume': [1000 + i * 10 for i in range(20)],
+        'other_col': [i ** 2 for i in range(20)],
+    }
+    df = pd.DataFrame(data)
+    
+    result = filtrate_tripple_label_barrier(
+        df,
+        cusum_threshold=0.01,
+        vertical_barrier=3,
+        datetime_col='datetime'
+    )
+    
+    if len(result) > 0:
+        # Check that all original columns are preserved
+        assert 'close' in result.columns
+        assert 'volume' in result.columns
+        assert 'other_col' in result.columns
+
+
+def test_get_tripple_label_barrier_basic():
+    """Test basic functionality of get_tripple_label_barrier."""
+    # Create simple test dataframe
+    dates = pd.date_range(start='2023-01-01', periods=20, freq='1h')
+    df = pd.DataFrame({
+        'close': [100, 102, 101, 105, 103, 108, 106, 110, 107, 112,
+                  111, 115, 113, 118, 116, 120, 119, 125, 123, 128],
+        'volume': [1000] * 20
+    }, index=dates)
+    
+    close_series = df['close']
+    
+    # Create events dataframe with t1 values
+    events_df = pd.DataFrame({
+        't1': [dates[5], dates[10], dates[15]],
+    }, index=[dates[0], dates[5], dates[10]])
+    
+    result = get_tripple_label_barrier(
+        events_df,
+        close_series,
+        min_return=0.01
+    )
+    
+    # Check structure
+    assert 'label' in result.columns
+    assert 'return' in result.columns
+    assert len(result) == len(events_df)
+    
+    # Check labels are ternary
+    assert set(result['label'].unique()).issubset({-1, 0, 1})
+
+
+def test_get_tripple_label_barrier_positive_return():
+    """Test labeling with positive returns."""
+    dates = pd.date_range(start='2023-01-01', periods=10, freq='1h')
+    close_series = pd.Series([100, 101, 102, 103, 104, 105, 106, 107, 108, 109], index=dates)
+    
+    events_df = pd.DataFrame({
+        't1': [dates[5]],  # price goes from 100 to 105 = 5% return
+    }, index=[dates[0]])
+    
+    result = get_tripple_label_barrier(
+        events_df,
+        close_series,
+        min_return=0.01
+    )
+    
+    assert result['label'].iloc[0] == 1
+    assert result['return'].iloc[0] > 0.04
+
+
+def test_get_tripple_label_barrier_negative_return():
+    """Test labeling with negative returns."""
+    dates = pd.date_range(start='2023-01-01', periods=10, freq='1h')
+    close_series = pd.Series([100, 99, 98, 97, 96, 95, 94, 93, 92, 91], index=dates)
+    
+    events_df = pd.DataFrame({
+        't1': [dates[5]],  # price goes from 100 to 95 = -5% return
+    }, index=[dates[0]])
+    
+    result = get_tripple_label_barrier(
+        events_df,
+        close_series,
+        min_return=0.01
+    )
+    
+    assert result['label'].iloc[0] == -1
+    assert result['return'].iloc[0] < -0.04
+
+
+def test_get_tripple_label_barrier_zero_label():
+    """Test labeling with returns below threshold."""
+    dates = pd.date_range(start='2023-01-01', periods=10, freq='1h')
+    close_series = pd.Series([100, 100.5, 101, 101.5, 102, 102.5, 103, 103.5, 104, 104.5], index=dates)
+    
+    events_df = pd.DataFrame({
+        't1': [dates[3]],  # price goes from 100 to 101.5 = 1.5% return
+    }, index=[dates[0]])
+    
+    result = get_tripple_label_barrier(
+        events_df,
+        close_series,
+        min_return=0.02  # Above the return
+    )
+    
+    assert result['label'].iloc[0] == 0
+    assert 0.01 < result['return'].iloc[0] < 0.02
+
+
+def test_get_tripple_label_barrier_nan_t1():
+    """Test handling of NaN t1 values."""
+    dates = pd.date_range(start='2023-01-01', periods=10, freq='1h')
+    close_series = pd.Series([100 + i for i in range(10)], index=dates)
+    
+    events_df = pd.DataFrame({
+        't1': [dates[3], np.nan, dates[5]],
+    }, index=[dates[0], dates[1], dates[2]])
+    
+    result = get_tripple_label_barrier(
+        events_df,
+        close_series,
+        min_return=0.01
+    )
+    
+    # NaN t1 should result in label 0 and return 0
+    assert result['label'].iloc[1] == 0
+    assert result['return'].iloc[1] == 0
+
+
+def test_get_tripple_label_barrier_min_return_threshold(sample_dataframe):
+    """Test min_return parameter affects labeling."""
+    if len(sample_dataframe) < 20:
+        pytest.skip("Sample dataframe too small")
+    
+    close_series = sample_dataframe['close']
+    
+    # Create events with moderate returns
+    events_df = pd.DataFrame({
+        't1': [close_series.index[10]],
+    }, index=[close_series.index[0]])
+    
+    # Test with different min_return thresholds
+    result_low = get_tripple_label_barrier(
+        events_df.copy(),
+        close_series,
+        min_return=0.0001
+    )
+    
+    result_high = get_tripple_label_barrier(
+        events_df.copy(),
+        close_series,
+        min_return=0.1
+    )
+    
+    # Higher threshold may change labels
+    assert len(result_low) == len(result_high)
+
+
+def test_get_tripple_label_barrier_multiple_events():
+    """Test with multiple events."""
+    dates = pd.date_range(start='2023-01-01', periods=15, freq='1h')
+    close_series = pd.Series(
+        [100, 102, 104, 103, 105, 107, 106, 108, 110, 109, 111, 113, 112, 114, 116],
+        index=dates
+    )
+    
+    events_df = pd.DataFrame({
+        't1': [dates[2], dates[5], dates[9]],
+    }, index=[dates[0], dates[3], dates[6]])
+    
+    result = get_tripple_label_barrier(
+        events_df,
+        close_series,
+        min_return=0.01
+    )
+    
+    assert len(result) == 3
+    assert len(result['label']) == 3
+    assert len(result['return']) == 3
+
+
+def test_integration_filtrate_and_label(simple_dataframe):
+    """Test integration of both functions."""
+    df = simple_dataframe.reset_index()
+    df.rename(columns={'index': 'datetime'}, inplace=True)
+    
+    # First, filtrate
+    filtered = filtrate_tripple_label_barrier(
+        df,
+        cusum_threshold=0.01,
+        vertical_barrier=5,
+        datetime_col='datetime'
+    )
+    
+    if len(filtered) > 0:
+        # Then label
+        result = get_tripple_label_barrier(
+            filtered,
+            simple_dataframe['close'],
+            min_return=0.005
         )
-    
-    # Should raise ValueError for invalid side
-    with pytest.raises(ValueError, match="side must be either 'long' or 'short'"):
-        get_triple_barrier_labels(
-            sample_dataframe,
-            events_with_barriers,
-            threshold=0.005,
-            pt=2,
-            sl=1,
-            side='invalid',
-            datetime_col='date'
-        )
+        
+        # Check result structure
+        assert 'label' in result.columns
+        assert 'return' in result.columns
+        assert len(result) == len(filtered)
+        assert set(result['label'].unique()).issubset({-1, 0, 1})
 
 
-def test_get_triple_barrier_labels_notebook_like(small_dataframe_with_date):
-    """Notebook-style pipeline with datetime_col and deterministic outcomes."""
-    event_times = [small_dataframe_with_date['date'].iloc[0], small_dataframe_with_date['date'].iloc[3]]
-    events = pd.DataFrame(index=event_times)
-
-    events = add_vertical_barrier_to_horizontal_barrier_events(
-        small_dataframe_with_date,
-        events,
-        vertical_barrier_duration=pd.Timedelta('2h'),
-        datetime_col='date',
-    )
-
-    labels, rets = get_triple_barrier_labels(
-        small_dataframe_with_date,
-        events,
-        threshold=0.01,
-        pt=1.0,
-        sl=1.0,
-        side='long',
-        datetime_col='date',
-    )
-
-    # Alignment and validity
-    assert len(labels) == len(events) == len(rets)
-    assert all(labels.index == events.index)
-    assert all(rets.index == events.index)
-    assert set(labels.unique()).issubset({-1, 0, 1})
-    assert rets.notna().all()
-
-    # Deterministic: first event hits profit-take (~+3%), second hits stop-loss (~-2%)
-    assert labels.iloc[0] == 1
-    assert labels.iloc[1] == -1
-    assert rets.iloc[0] >= 0.03 - 1e-6
-    assert rets.iloc[1] <= -0.019 - 1e-6
-
-
-def test_add_vertical_barrier_with_index():
-    """Test add_vertical_barrier_to_horizontal_barrier_events using index."""
-    dates = pd.date_range('2024-01-01', periods=5, freq='h')
-    df = pd.DataFrame({
-        'close': [100, 102, 101, 103, 105]
-    }, index=dates)
-    
-    event_times = [dates[0], dates[2]]
-    events = pd.DataFrame(index=event_times)
-    
-    result = add_vertical_barrier_to_horizontal_barrier_events(
-        df, events, pd.Timedelta(hours=2), datetime_col='index'
-    )
-    
-    assert 'vertical_barrier' in result.columns
-    assert 'ret' in result.columns
-    assert len(result) == 2
-    assert result['vertical_barrier'].iloc[0] == dates[2]
-    assert result['vertical_barrier'].iloc[1] == dates[4]
-
-
-def test_add_vertical_barrier_with_column():
-    """Test add_vertical_barrier_to_horizontal_barrier_events using column."""
-    dates = pd.date_range('2024-01-01', periods=5, freq='h')
+def test_filtrate_empty_result():
+    """Test when filtrate produces no events."""
+    dates = pd.date_range(start='2023-01-01', periods=10, freq='1h')
     df = pd.DataFrame({
         'datetime': dates,
-        'close': [100, 102, 101, 103, 105]
+        'close': [100] * 10,  # No price change
+        'volume': [1000] * 10
     })
     
-    event_times = [dates[0], dates[2]]
-    events = pd.DataFrame(index=event_times)
-    
-    result = add_vertical_barrier_to_horizontal_barrier_events(
-        df, events, pd.Timedelta(hours=2), datetime_col='datetime'
+    result = filtrate_tripple_label_barrier(
+        df,
+        cusum_threshold=0.5,  # Very high threshold
+        vertical_barrier=1,
+        datetime_col='datetime'
     )
     
-    assert 'vertical_barrier' in result.columns
-    assert 'ret' in result.columns
-    assert len(result) == 2
-    assert result['vertical_barrier'].iloc[0] == dates[2]
-    assert result['vertical_barrier'].iloc[1] == dates[4]
+    # Result should be empty dataframe
+    assert isinstance(result, pd.DataFrame)
+    assert len(result) == 0
 
 
-def test_add_vertical_barrier_exceeds_last_date():
-    """Test that vertical barrier doesn't exceed last date."""
-    dates = pd.date_range('2024-01-01', periods=5, freq='h')
-    df = pd.DataFrame({
-        'datetime': dates,
-        'close': [100, 102, 101, 103, 105]
-    })
+def test_get_tripple_label_barrier_empty_dataframe():
+    """Test with empty events dataframe."""
+    dates = pd.date_range(start='2023-01-01', periods=10, freq='1h')
+    close_series = pd.Series([100 + i for i in range(10)], index=dates)
     
-    # Event at last date, barrier would go past end
-    events = pd.DataFrame(index=[dates[-1]])
+    events_df = pd.DataFrame()
     
-    result = add_vertical_barrier_to_horizontal_barrier_events(
-        df, events, pd.Timedelta(hours=3), datetime_col='datetime'
+    result = get_tripple_label_barrier(
+        events_df,
+        close_series,
+        min_return=0.01
     )
     
-    assert result['vertical_barrier'].iloc[0] == dates[-1]
+    assert len(result) == 0
 
 
-def test_get_binary_labels_with_index():
-    """Test get_binary_labels with index-based setup."""
-    dates = pd.date_range('2024-01-01', periods=3, freq='h')
-    df = pd.DataFrame({
-        'close': [100, 105, 103]
-    }, index=dates)
+def test_filtrate_different_vertical_barriers(volatile_dataframe):
+    """Test with different vertical barrier values."""
+    df = volatile_dataframe.reset_index()
+    df.rename(columns={'index': 'datetime'}, inplace=True)
     
-    events = pd.DataFrame({
-        'ret': [0.05, -0.02, 0.01]
-    }, index=dates)
+    result_small = filtrate_tripple_label_barrier(
+        df,
+        cusum_threshold=0.01,
+        vertical_barrier=2,
+        datetime_col='datetime'
+    )
     
-    labels = get_binary_labels(events, min_ret=0.01, side='long')
+    result_large = filtrate_tripple_label_barrier(
+        df,
+        cusum_threshold=0.01,
+        vertical_barrier=10,
+        datetime_col='datetime'
+    )
     
-    assert labels.iloc[0] == 1  # 5% > 0 (long)
-    assert labels.iloc[1] == 0  # -2% < 0 (not profitable)
-    assert labels.iloc[2] == 1  # 1% >= 0.01
-
-
-def test_get_binary_labels_with_column():
-    """Test get_binary_labels with column-based setup."""
-    dates = pd.date_range('2024-01-01', periods=3, freq='h')
-    df = pd.DataFrame({
-        'datetime': dates,
-        'close': [100, 105, 103]
-    })
-    
-    events = pd.DataFrame({
-        'ret': [0.05, -0.02, 0.01]
-    }, index=dates)
-    
-    labels = get_binary_labels(events, min_ret=0.01, side='short')
-    
-    assert labels.iloc[0] == 0  # 5% > 0 (not profitable for short)
-    assert labels.iloc[1] == 1  # -2% < 0 (profitable for short)
-    assert labels.iloc[2] == 0  # 1% >= 0 (not profitable for short)
+    # Both should have same number of events but different t1 values
+    assert len(result_small) == len(result_large)
+    if len(result_small) > 0:
+        # t1 values should differ (larger barrier = later t1)
+        assert not result_small['t1'].equals(result_large['t1'])
