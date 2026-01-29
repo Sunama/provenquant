@@ -56,9 +56,15 @@ def filtrate_tripple_label_barrier(
     df['t1'] = t1
     
     # Add another columns in dataframe to df
-    for col in dataframe.columns:
-        if col != datetime_col:
-            df[col] = dataframe.set_index(datetime_col).loc[t_events][col]
+    if datetime_col == 'index':
+        # datetime is already the index
+        for col in dataframe.columns:
+            df[col] = dataframe.loc[t_events][col]
+    else:
+        # datetime is a column, need to set it as index first
+        for col in dataframe.columns:
+            if col != datetime_col:
+                df[col] = dataframe.set_index(datetime_col).loc[t_events][col]
     
     return df
 

@@ -2,14 +2,14 @@ import pandas as pd
 
 def get_dollar_bars(
     dataframe: pd.DataFrame,
-    dollar_bar_size: float,
+    threshold: float,
     datetime_col: str='index',
 ) -> pd.DataFrame:
     """Generate dollar bars from tick data.
 
     Args:
         dataframe (pd.DataFrame): Input tick data with 'open', 'high', 'low', 'close', 'volume' columns.
-        dollar_bar_size (float): Dollar threshold for each bar.
+        threshold (float): Dollar threshold for each bar.
         datetime_col (str, optional): Name of the datetime column. Defaults to 'index'.
     Returns:
         pd.DataFrame: DataFrame containing dollar bars.
@@ -55,7 +55,7 @@ def get_dollar_bars(
             cum_buy_volume += row['volume'] / 2
             cum_sell_volume += row['volume'] / 2
         
-        if cum_dollar_value >= dollar_bar_size:
+        if cum_dollar_value >= threshold:
             bar_close = row['close']
             bars.append({
                 'start_date': bar_start_date,
