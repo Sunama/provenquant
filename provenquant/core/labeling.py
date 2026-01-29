@@ -65,14 +65,18 @@ def filtrate_tripple_label_barrier(
 def get_tripple_label_barrier(
     dataframe: pd.DataFrame,
     close_series: pd.Series,
-    min_return: float = 0.0,
+    threshold: float = 0.01,
+    pt: float = 2,
+    sl: float = 1,
 ) -> pd.DataFrame:
     """Get triple barrier labels from DataFrame with t1.
 
     Args:
         dataframe (pd.DataFrame): DataFrame with t1.
         close_series (pd.Series): Series of close prices that have datetime index.
-        min_return (float): Minimum return threshold to assign labels. Defaults to 0.0.
+        threshold (float): Threshold for labeling. Defaults to 0.01.
+        pt (float): Profit taking multiplier. Defaults to 2.
+        sl (float): Stop loss multiplier. Defaults to 1.
         
     Returns:
         pd.DataFrame: DataFrame with labels and returns.
@@ -92,9 +96,9 @@ def get_tripple_label_barrier(
         ret = (end_price - start_price) / start_price
         returns.append(ret)
         
-        if ret > min_return:
+        if ret > threshold * pt:
             labels.append(1)
-        elif ret < -min_return:
+        elif ret < -threshold * sl:
             labels.append(-1)
         else:
             labels.append(0)
