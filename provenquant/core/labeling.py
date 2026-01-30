@@ -1,5 +1,34 @@
-import pandas as pd
+from provenquant.core.feature_selection import stationary_test
+from scipy import stats
 import numpy as np
+import pandas as pd
+
+def evaluate_triple_barrier(
+    path: list,
+    tp: float,
+    sl: float,
+    vb: int
+) -> tuple[float, int]:
+    """Return PnL and holding bars when the first barrier is hit (path starts at 0)
+    
+    Args:
+        path (list): List of PnL values.
+        tp (float): Take profit barrier.
+        sl (float): Stop loss barrier.
+        vb (int): Vertical barrier in bars.
+        
+    Returns:
+        tuple: (PnL at barrier hit, holding bars)
+    """
+    for i in range(1, len(path)):
+        pnl = path[i]  # assume normalized to start at 0
+        if pnl >= tp:
+            return tp, i
+        if pnl <= sl:
+            return sl, i
+        if i >= vb:
+            return pnl, i
+    return path[-1], len(path) - 1  # If no barrier is hit
 
 def filtrate_tripple_label_barrier(
     dataframe: pd.DataFrame,
@@ -68,21 +97,48 @@ def filtrate_tripple_label_barrier(
     
     return df
 
+def fit_ou_ols(series: pd.Series, dt: float = 1.0):
+    """Fit OU on series
+    
+    Args:
+        series (pd.Series): Series to fit.
+        dt (float): Time step size. Defaults to 1.0.
+        
+    Returns:
+        tuple: kappa, theta, sigma
+    
+    """
+    # Test stationarity ก่อน
+    result = stationary_test(series)
+    if not result:
+        print("Warning: Series is not stationary. OU fit may be invalid.")
+
+    X = series.values[:-1]
+    dX = series.values[1:] - series.values[:-1]
+    if len(X) < 2:
+        raise ValueError("Series is too short to fit OU process.")
+    
+    slope, intercept, r_value, p_value, std_err = stats.linregress(X, dX)
+    kappa = -slope / dt
+    theta = intercept / (kappa * dt) if kappa != 0 else 0
+    residuals = dX - (intercept + slope * X)
+    sigma = np.std(residuals) / np.sqrt(dt)
+
+    return kappa, theta, sigma
+
 def get_tripple_label_barrier(
     dataframe: pd.DataFrame,
     close_series: pd.Series,
-    threshold: float = 0.01,
-    pt: float = 2,
-    sl: float = 1,
+    tp: float = 0.02,
+    sl: float = 0.01,
 ) -> pd.DataFrame:
     """Get triple barrier labels from DataFrame with t1.
 
     Args:
         dataframe (pd.DataFrame): DataFrame with t1.
         close_series (pd.Series): Series of close prices that have datetime index.
-        threshold (float): Threshold for labeling. Defaults to 0.01.
-        pt (float): Profit taking multiplier. Defaults to 2.
-        sl (float): Stop loss multiplier. Defaults to 1.
+        tp (float): Profit taking percentage. Defaults to 2%.
+        sl (float): Stop loss percentage. Defaults to 1%.
         
     Returns:
         pd.DataFrame: DataFrame with labels returns and mapped_labels.
@@ -97,20 +153,138 @@ def get_tripple_label_barrier(
             returns.append(0)
             continue
         
-        start_price = close_series.loc[event_time]
-        end_price = close_series.loc[t1]
-        ret = (end_price - start_price) / start_price
-        returns.append(ret)
+        start_time = event_time
+        end_time = t1
+        start_price = close_series.loc[start_time]
+        exited = False
         
-        if ret > threshold * pt:
-            labels.append(1)
-        elif ret < -threshold * sl:
-            labels.append(-1)
-        else:
+        for t in close_series.loc[start_time:end_time].index:
+            price = close_series.loc[t]
+            ret = (price - start_price) / start_price
+            
+            if ret > tp:
+                labels.append(1)
+                returns.append(ret)
+                exited = True
+                break
+            elif ret < -sl:
+                labels.append(-1)
+                returns.append(ret)
+                exited = True
+                break
+        
+        if not exited:
+            end_price = close_series.loc[end_time]
+            ret = (end_price - start_price) / start_price
             labels.append(0)
+            returns.append(ret)
     
     dataframe['label'] = labels
     dataframe['return'] = returns
     dataframe['mapped_label'] = dataframe['label'].map({1: 2, 0: 1, -1: 0})
     
     return dataframe
+
+def optimize_triple_barriers(
+    kappa: float,
+    theta: float,
+    sigma: float,
+    x0: float = 0.0,
+    n_paths: int = 5000,
+    n_steps: int = 2000,
+    T: float = 500.0
+) -> tuple[float, float, int, float]:
+    """Optimize triple barrier parameters using simulated OU process.
+    
+    Args:
+        kappa (float): Mean reversion speed.
+        theta (float): Long-term mean.
+        sigma (float): Volatility.
+        x0 (float): Initial value. Defaults to 0.0.
+        n_paths (int): Number of simulated paths. Defaults to 5000.
+        n_steps (int): Number of time steps. Defaults to 2000.
+        T (float): Total time. Defaults to 500.0.
+        
+    Returns:
+        tuple: Optimal (tp, sl, vb)
+    """
+    t, paths = simulate_ou_process(kappa=kappa, theta=theta, sigma=sigma, x0=x0,
+                                   T=T, n_steps=n_steps, n_paths=n_paths)
+    
+    tp_grid = np.linspace(0.5 * sigma, 4 * sigma, 8)
+    sl_grid = np.linspace(-4 * sigma, -0.5 * sigma, 8)
+    vb_grid = np.array([50, 100, 200, 300, 500, 1000])  # ปรับตาม data ของคุณ
+    
+    best_sharpe = -np.inf
+    best_params = None
+    
+    for tp in tp_grid:
+        for sl in sl_grid:
+            for vb in vb_grid:
+                returns = []
+                holdings = []
+                for p in paths.T:
+                    ret, hold = evaluate_triple_barrier(p, tp, sl, vb)
+                    returns.append(ret)
+                    holdings.append(hold)
+                
+                mean_ret = np.mean(returns)
+                std_ret = np.std(returns) if np.std(returns) > 0 else 1e-6
+                sharpe = mean_ret / std_ret  # rf=0
+                
+                if sharpe > best_sharpe:
+                    best_sharpe = sharpe
+                    best_params = (tp, sl, vb, np.mean(holdings))
+    
+    print(f"Optimal: TP={best_params[0]:.4f} ({best_params[0]/sigma:.2f}σ), "
+          f"SL={best_params[1]:.4f} ({best_params[1]/sigma:.2f}σ), "
+          f"VB={best_params[2]} bars, Avg hold={best_params[3]:.1f} bars")
+    print(f"Best Sharpe: {best_sharpe:.4f}")
+    
+    return best_params[0], abs(best_params[1]), best_params[2]
+
+def simulate_ou_process(
+    theta: float = 0.0,
+    kappa: float = 1.0,
+    sigma: float = 0.5,
+    x0: float = 0.0,
+    T: float = 1.0,
+    n_steps: int = 1000,
+    n_paths: int = 1,
+    seed: int = 42
+):
+    """Simulate discrete Ornstein-Uhlenbeck process using Euler-Maruyama scheme.
+       dX_t = kappa * (theta - X_t) dt + sigma dW_t
+    
+    Args:
+        theta (float): Equilibrium value (long-term mean).
+        kappa (float): Speed of mean reversion.
+        sigma (float): Volatility of the noise.
+        x0 (float): Initial value of the process.
+        T (float): Total time.
+        n_steps (int): Number of time steps.
+        n_paths (int): Number of paths to simulate.
+        seed (int): Random seed for reproducibility.
+        
+    Returns:
+        tuple: (time array, paths array of shape [n_steps+1, n_paths])
+    """
+    np.random.seed(seed)
+    
+    dt = T / n_steps                  # ขนาด time step
+    t = np.linspace(0, T, n_steps+1)  # เวลา array
+    
+    # สร้าง array สำหรับเก็บ paths (shape: [n_steps+1, n_paths])
+    paths = np.zeros((n_steps + 1, n_paths), dtype=np.float64)
+    paths[0, :] = x0
+    
+    # Simulate แต่ละ path
+    for i in range(1, n_steps + 1):
+        dW = np.random.normal(0, np.sqrt(dt), size=n_paths)  # Brownian increment
+        drift = np.clip(kappa * (theta - paths[i-1, :]) * dt, -1e10, 1e10)
+        diffusion = sigma * dW
+        new_value = paths[i-1, :] + drift + diffusion
+        # ป้องกัน NaN values
+        paths[i, :] = np.where(np.isfinite(new_value), new_value, paths[i-1, :])
+    
+    return t, paths

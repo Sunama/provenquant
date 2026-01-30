@@ -1,9 +1,11 @@
 from provenquant.core.cross_validation import PurgedKFold
 from sklearn.metrics import accuracy_score, log_loss
+from statsmodels.tools.sm_exceptions import InterpolationWarning
 from statsmodels.tsa.stattools import adfuller, kpss
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
+import warnings
 
 def cv_score(
     model: object,
@@ -283,7 +285,10 @@ def stationary_test(
     """
     
     adf_result = adfuller(series.dropna())
-    kpss_result = kpss(series.dropna(), nlags="auto")
+    
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=InterpolationWarning)
+        kpss_result = kpss(series.dropna(), nlags="auto", regression="c")
     
     adf_stationary = adf_result[1] < alpha
     kpss_stationary = kpss_result[1] >= alpha
