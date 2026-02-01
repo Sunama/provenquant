@@ -1,5 +1,5 @@
 from provenquant.core.cross_validation import PurgedKFold
-from sklearn.metrics import accuracy_score, log_loss
+from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
 from statsmodels.tools.sm_exceptions import InterpolationWarning
 from statsmodels.tsa.stattools import adfuller, kpss
 from tqdm import tqdm
@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import warnings
 
-def cv_score(
+def _cv_score(
     model: object,
     X: np.ndarray,
     y: np.ndarray,
@@ -34,7 +34,6 @@ def cv_score(
     Returns:
         list[float]: List of cross-validated scores.
     """
-    
     scores = []
 
     pkf = PurgedKFold(
@@ -60,12 +59,84 @@ def cv_score(
         elif scoring == 'accuracy':
             y_pred = model.predict(X_test)
             score = accuracy_score(y_test, y_pred, sample_weight=sw_test)
+        elif scoring == 'auc':
+            y_pred = model.predict_proba(X_test)
+            if y_pred.shape[1] == 2:
+                y_pred = y_pred[:, 1]
+                score = roc_auc_score(y_test, y_pred, sample_weight=sw_test)
+            else:
+                score = roc_auc_score(y_test, y_pred, multi_class='ovr', sample_weight=sw_test)
         else:
             raise ValueError("Unsupported scoring method")
 
         scores.append(score)
 
     return scores
+
+def backward_feature_elimination(
+    model: object,
+    dataframe: pd.DataFrame,
+    feature_cols: list,
+    target_col: str,
+    sample_weight_col: str = None,
+    n_splits: int = 5,
+    purge: int = 0,
+    embargo: int = 0,
+    scoring: str = 'neg_log_loss',
+    threshold: float = 0.01,
+    verbose: bool = False
+) -> list:
+    """Perform backward feature elimination based on cross-validated scores.
+
+    Args:
+        model (object): Trained model with fit and predict methods.
+        dataframe (pd.DataFrame): DataFrame containing features and target.
+        feature_cols (list): List of feature column names.
+        target_col (str): Target column name.
+        sample_weight_col (str, optional): Sample weight column name. Defaults to None.
+        n_splits (int, optional): Number of splits for cross-validation. Defaults to 5.
+        purge (int, optional): Purge size for Purged K-Fold. Defaults to 0.
+        embargo (int, optional): Embargo size for Purged K-Fold. Defaults to 0.
+        scoring (str, optional): Scoring metric. That are 'neg_log_loss', 'accuracy',
+                                 'auc' supported.
+                                 Defaults to 'neg_log_loss'.
+        threshold (float, optional): Minimum improvement threshold to keep a feature.
+                                     Defaults to 0.01.
+        verbose (bool, optional): Whether to print progress. Defaults to False.
+    
+    Returns:
+        list: List of selected feature column names.
+    """
+    selected_features = feature_cols.copy()
+
+    while len(selected_features) > 1:
+        scores = _cv_score(
+            model,
+            dataframe[selected_features].values,
+            dataframe[target_col].values,
+            sample_weight=dataframe[sample_weight_col].values if sample_weight_col else None,
+            n_splits=n_splits,
+            purge=purge,
+            embargo=embargo,
+            scoring=scoring
+        )
+        score = np.mean(scores)
+        
+        if score < threshold:
+            if verbose:
+                print(f"Stopping elimination. Score {score} below threshold {threshold}.")
+                print(f"STD: {np.std(scores):.4f}, min: {np.min(scores):.4f}, max: {np.max(scores):.4f}")
+            break
+        
+        feature_importance = model.feature_importances_
+        most_important_idx = np.argmax(feature_importance)
+        feature_to_remove = selected_features[most_important_idx]
+        selected_features.remove(feature_to_remove)
+        if verbose:
+            print(f"Score {score}. Removed feature: {feature_to_remove}")
+        
+    return selected_features
+    
 
 def calculate_mda_feature_importances(
     model: object,
@@ -89,15 +160,14 @@ def calculate_mda_feature_importances(
         n_splits (int, optional): Number of splits for cross-validation. Defaults to 5.
         purge (int, optional): Purge size for Purged K-Fold. Defaults to 0.
         embargo (int, optional): Embargo size for Purged K-Fold. Defaults to 0.
-        scoring (str, optional): Scoring metric. That are 'neg_log_loss' and 'accuracy'
-                                 supported.
+        scoring (str, optional): Scoring metric. That are 'neg_log_loss', 'accuracy',
+                                 and 'auc' supported.
                                  Defaults to 'neg_log_loss'.
         
     Returns:
         pd.DataFrame: DataFrame containing feature importance scores with columns 
                       'feature_importances' and 'mean_score'.
     """
-    
     X = dataframe[feature_cols].values
     y = dataframe[target_col].values
     if sample_weight_col:
@@ -127,12 +197,14 @@ def calculate_mda_feature_importances(
 
         model.fit(X_train, y_train, sample_weight=sw_train)
         if scoring == 'neg_log_loss':
-            
             y_pred = model.predict_proba(X_test)
             baseline_score = -log_loss(y_test, y_pred, sample_weight=sw_test)
         elif scoring == 'accuracy':
             y_pred = model.predict(X_test)
             baseline_score = accuracy_score(y_test, y_pred, sample_weight=sw_test)
+        elif scoring == 'auc':
+            y_pred = model.predict_proba(X_test)[:, 1]
+            baseline_score = roc_auc_score(y_test, y_pred, sample_weight=sw_test)
         else:
             raise ValueError("Unsupported scoring method")
 
@@ -191,7 +263,6 @@ def calculate_sfi_feature_importances(
     Returns:
         pd.DataFrame: DataFrame containing feature importance scores.
     """
-    
     importances = pd.DataFrame(columns=['mean', 'std'], index=feature_cols)
     iterator = tqdm(feature_cols, desc="Calculating SFI feature importance") if show_progress else feature_cols
     for feature in iterator:
@@ -202,7 +273,7 @@ def calculate_sfi_feature_importances(
         else:
             sample_weight = None
 
-        scores = cv_score(
+        scores = _cv_score(
             model,
             X_feature,
             y,
@@ -228,7 +299,6 @@ def _get_e_vec(dot, threshold) -> tuple[np.ndarray, np.ndarray]:
     Returns:
         np.ndarray: Eigen vectors above the threshold.
     """
-    
     eig_vals, eig_vecs = np.linalg.eig(dot)
     idx = eig_vals.argsort()[::-1]
     eig_vals, eig_vecs = eig_vals[idx], eig_vecs[:, idx]
@@ -258,7 +328,6 @@ def orthogonal_features(
     Returns:
         np.ndarray: Indices of orthogonal features.
     """
-    
     df_z = df_X.sub(df_X.mean(), axis=1).div(df_X.std(), axis=1)
     dot = pd.DataFrame(
         np.dot(df_z.T, df_z),
@@ -283,7 +352,6 @@ def stationary_test(
     Returns:
         bool: True if series is stationary, False otherwise.
     """
-    
     adf_result = adfuller(series.dropna())
     
     with warnings.catch_warnings():

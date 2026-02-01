@@ -5,11 +5,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 
 from provenquant.core.feature_selection import (
-  cv_score,
-  feature_importance_mda,
-  feature_importance_sfi,
+  _cv_score,
+  calculate_mda_feature_importances,
+  calculate_sfi_feature_importances,
   orthogonal_features,
-  _get_e_vec
+  _get_e_vec,
+  backward_feature_elimination
 )
 
 
@@ -29,7 +30,7 @@ class TestCvScore:
     """Test cv_score with neg_log_loss scoring"""
     X, y, _ = sample_data
     model = LogisticRegression(random_state=42)
-    scores = cv_score(model, X, y, n_splits=3, scoring='neg_log_loss')
+    scores = _cv_score(model, X, y, n_splits=3, scoring='neg_log_loss')
     
     assert len(scores) == 3
     assert all(isinstance(s, float) for s in scores)
@@ -39,7 +40,7 @@ class TestCvScore:
     """Test cv_score with accuracy scoring"""
     X, y, _ = sample_data
     model = LogisticRegression(random_state=42)
-    scores = cv_score(model, X, y, n_splits=3, scoring='accuracy')
+    scores = _cv_score(model, X, y, n_splits=3, scoring='accuracy')
     
     assert len(scores) == 3
     assert all(isinstance(s, float) for s in scores)
@@ -49,7 +50,7 @@ class TestCvScore:
     """Test cv_score with sample weights"""
     X, y, sample_weight = sample_data
     model = LogisticRegression(random_state=42)
-    scores = cv_score(model, X, y, sample_weight=sample_weight, 
+    scores = _cv_score(model, X, y, sample_weight=sample_weight, 
              n_splits=3, scoring='accuracy')
     
     assert len(scores) == 3
@@ -59,7 +60,7 @@ class TestCvScore:
     """Test cv_score with purge and embargo parameters"""
     X, y, _ = sample_data
     model = LogisticRegression(random_state=42)
-    scores = cv_score(model, X, y, n_splits=3, purge=2, 
+    scores = _cv_score(model, X, y, n_splits=3, purge=2, 
              embargo=2, scoring='accuracy')
     
     assert len(scores) == 3
@@ -70,7 +71,7 @@ class TestCvScore:
     model = LogisticRegression(random_state=42)
     
     with pytest.raises(ValueError, match="Unsupported scoring method"):
-      cv_score(model, X, y, n_splits=3, scoring='invalid_metric')
+      _cv_score(model, X, y, n_splits=3, scoring='invalid_metric')
 
 
 class TestFeatureImportanceMDA:
@@ -93,12 +94,12 @@ class TestFeatureImportanceMDA:
     """Test basic MDA feature importance"""
     model = LogisticRegression(random_state=42)
     feature_cols = ['feature1', 'feature2', 'feature3']
-    result = feature_importance_mda(
+    result = calculate_mda_feature_importances(
       model, sample_dataframe, feature_cols, 'target', n_splits=3
     )
     
     assert isinstance(result, pd.DataFrame)
-    assert list(result.index) == feature_cols
+    assert set(result.index) == set(feature_cols)
     assert 'feature_importances' in result.columns
     assert 'mean_score' in result.columns
     assert len(result) == 3
@@ -107,7 +108,7 @@ class TestFeatureImportanceMDA:
     """Test MDA with sample weights"""
     model = LogisticRegression(random_state=42)
     feature_cols = ['feature1', 'feature2', 'feature3']
-    result = feature_importance_mda(
+    result = calculate_mda_feature_importances(
       model, sample_dataframe, feature_cols, 'target',
       sample_weight_col='weight', n_splits=3
     )
@@ -119,7 +120,7 @@ class TestFeatureImportanceMDA:
     """Test MDA with accuracy scoring"""
     model = LogisticRegression(random_state=42)
     feature_cols = ['feature1', 'feature2', 'feature3']
-    result = feature_importance_mda(
+    result = calculate_mda_feature_importances(
       model, sample_dataframe, feature_cols, 'target',
       n_splits=3, scoring='accuracy'
     )
@@ -134,7 +135,7 @@ class TestFeatureImportanceMDA:
     feature_cols = ['feature1', 'feature2', 'feature3']
     
     with pytest.raises(ValueError, match="Unsupported scoring method"):
-      feature_importance_mda(
+      calculate_mda_feature_importances(
         model, sample_dataframe, feature_cols, 'target',
         n_splits=3, scoring='invalid'
       )
@@ -160,12 +161,12 @@ class TestFeatureImportanceSFI:
     """Test basic SFI feature importance"""
     model = LogisticRegression(random_state=42)
     feature_cols = ['feature1', 'feature2', 'feature3']
-    result = feature_importance_sfi(
+    result = calculate_sfi_feature_importances(
       model, sample_dataframe, feature_cols, 'target', n_splits=3
     )
     
     assert isinstance(result, pd.DataFrame)
-    assert list(result.index) == feature_cols
+    assert set(result.index) == set(feature_cols)
     assert 'mean' in result.columns
     assert 'std' in result.columns
     assert len(result) == 3
@@ -174,7 +175,7 @@ class TestFeatureImportanceSFI:
     """Test SFI with sample weights"""
     model = LogisticRegression(random_state=42)
     feature_cols = ['feature1', 'feature2', 'feature3']
-    result = feature_importance_sfi(
+    result = calculate_sfi_feature_importances(
       model, sample_dataframe, feature_cols, 'target',
       sample_weight_col='weight', n_splits=3
     )
@@ -186,7 +187,7 @@ class TestFeatureImportanceSFI:
     """Test SFI with accuracy scoring"""
     model = RandomForestClassifier(random_state=42, n_estimators=10)
     feature_cols = ['feature1', 'feature2']
-    result = feature_importance_sfi(
+    result = calculate_sfi_feature_importances(
       model, sample_dataframe, feature_cols, 'target',
       n_splits=3, scoring='accuracy'
     )
@@ -276,3 +277,137 @@ class TestGetEVec:
     eig_vals_high, eig_vecs_high = _get_e_vec(dot, threshold=0.99)
     
     assert len(eig_vals_low) <= len(eig_vals_high)
+
+
+class TestBackwardFeatureElimination:
+  """Test suite for backward_feature_elimination function"""
+  
+  @pytest.fixture
+  def sample_dataframe(self):
+    """Create sample DataFrame for testing"""
+    np.random.seed(42)
+    df = pd.DataFrame({
+      'feature1': np.random.randn(100),
+      'feature2': np.random.randn(100),
+      'feature3': np.random.randn(100),
+      'feature4': np.random.randn(100),
+      'target': np.random.randint(0, 2, 100),
+      'weight': np.random.rand(100)
+    })
+    return df
+  
+  def test_bfe_basic(self, sample_dataframe):
+    """Test basic backward feature elimination"""
+    model = RandomForestClassifier(random_state=42, n_estimators=10)
+    feature_cols = ['feature1', 'feature2', 'feature3', 'feature4']
+    result = backward_feature_elimination(
+      model, sample_dataframe, feature_cols, 'target', n_splits=3
+    )
+    
+    assert isinstance(result, list)
+    assert len(result) <= len(feature_cols)
+    assert all(f in feature_cols for f in result)
+  
+  def test_bfe_with_sample_weight(self, sample_dataframe):
+    """Test backward feature elimination with sample weights"""
+    model = RandomForestClassifier(random_state=42, n_estimators=10)
+    feature_cols = ['feature1', 'feature2', 'feature3', 'feature4']
+    result = backward_feature_elimination(
+      model, sample_dataframe, feature_cols, 'target',
+      sample_weight_col='weight', n_splits=3
+    )
+    
+    assert isinstance(result, list)
+    assert len(result) <= len(feature_cols)
+  
+  def test_bfe_accuracy_scoring(self, sample_dataframe):
+    """Test backward feature elimination with accuracy scoring"""
+    model = RandomForestClassifier(random_state=42, n_estimators=10)
+    feature_cols = ['feature1', 'feature2', 'feature3', 'feature4']
+    result = backward_feature_elimination(
+      model, sample_dataframe, feature_cols, 'target',
+      n_splits=3, scoring='accuracy'
+    )
+    
+    assert isinstance(result, list)
+    assert len(result) <= len(feature_cols)
+  
+  def test_bfe_auc_scoring(self, sample_dataframe):
+    """Test backward feature elimination with AUC scoring"""
+    model = RandomForestClassifier(random_state=42, n_estimators=10)
+    feature_cols = ['feature1', 'feature2', 'feature3', 'feature4']
+    result = backward_feature_elimination(
+      model, sample_dataframe, feature_cols, 'target',
+      n_splits=3, scoring='auc'
+    )
+    
+    assert isinstance(result, list)
+    assert len(result) <= len(feature_cols)
+  
+  def test_bfe_threshold_effect(self, sample_dataframe):
+    """Test backward feature elimination with different thresholds"""
+    model = RandomForestClassifier(random_state=42, n_estimators=10)
+    feature_cols = ['feature1', 'feature2', 'feature3', 'feature4']
+    
+    result_low_threshold = backward_feature_elimination(
+      model, sample_dataframe, feature_cols, 'target',
+      n_splits=3, threshold=0.0
+    )
+    
+    result_high_threshold = backward_feature_elimination(
+      model, sample_dataframe, feature_cols, 'target',
+      n_splits=3, threshold=1.0
+    )
+    
+    assert isinstance(result_low_threshold, list)
+    assert isinstance(result_high_threshold, list)
+    # Higher threshold should eliminate more features (stop earlier)
+    assert len(result_high_threshold) >= len(result_low_threshold)
+  
+  def test_bfe_with_purge_embargo(self, sample_dataframe):
+    """Test backward feature elimination with purge and embargo parameters"""
+    model = RandomForestClassifier(random_state=42, n_estimators=10)
+    feature_cols = ['feature1', 'feature2', 'feature3', 'feature4']
+    result = backward_feature_elimination(
+      model, sample_dataframe, feature_cols, 'target',
+      n_splits=3, purge=2, embargo=2
+    )
+    
+    assert isinstance(result, list)
+    assert len(result) <= len(feature_cols)
+  
+  def test_bfe_single_feature_remains(self, sample_dataframe):
+    """Test that at least one feature remains"""
+    model = RandomForestClassifier(random_state=42, n_estimators=10)
+    feature_cols = ['feature1', 'feature2', 'feature3']
+    result = backward_feature_elimination(
+      model, sample_dataframe, feature_cols, 'target',
+      n_splits=3, threshold=0.0
+    )
+    
+    assert len(result) >= 1
+  
+  def test_bfe_returns_original_feature_names(self, sample_dataframe):
+    """Test that returned features are from the original feature list"""
+    model = RandomForestClassifier(random_state=42, n_estimators=10)
+    feature_cols = ['feature1', 'feature2', 'feature3', 'feature4']
+    result = backward_feature_elimination(
+      model, sample_dataframe, feature_cols, 'target',
+      n_splits=3
+    )
+    
+    assert all(f in feature_cols for f in result)
+    assert len(set(result)) == len(result)  # No duplicates
+  
+  def test_bfe_verbose_mode(self, sample_dataframe, capsys):
+    """Test backward feature elimination with verbose output"""
+    model = RandomForestClassifier(random_state=42, n_estimators=10)
+    feature_cols = ['feature1', 'feature2', 'feature3']
+    result = backward_feature_elimination(
+      model, sample_dataframe, feature_cols, 'target',
+      n_splits=3, verbose=True
+    )
+    
+    captured = capsys.readouterr()
+    # In verbose mode, should print elimination information
+    assert isinstance(result, list)

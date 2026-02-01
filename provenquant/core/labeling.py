@@ -2,6 +2,7 @@ from provenquant.core.feature_selection import stationary_test
 from scipy import stats
 import numpy as np
 import pandas as pd
+import optuna
 
 def evaluate_triple_barrier(
     path: list,
@@ -192,9 +193,11 @@ def optimize_triple_barriers(
     x0: float = 0.0,
     n_paths: int = 5000,
     n_steps: int = 2000,
-    T: float = 500.0
+    T: float = 500.0,
+    n_trials: int = 100,
+    show_progress: bool = False
 ) -> tuple[float, float, int, float]:
-    """Optimize triple barrier parameters using simulated OU process.
+    """Optimize triple barrier parameters using simulated OU process with Optuna.
     
     Args:
         kappa (float): Mean reversion speed.
@@ -204,6 +207,8 @@ def optimize_triple_barriers(
         n_paths (int): Number of simulated paths. Defaults to 5000.
         n_steps (int): Number of time steps. Defaults to 2000.
         T (float): Total time. Defaults to 500.0.
+        n_trials (int): Number of optimization trials. Defaults to 100.
+        show_progress (bool): Whether to show progress bar. Defaults to False.
         
     Returns:
         tuple: Optimal (tp, sl, vb)
@@ -211,37 +216,55 @@ def optimize_triple_barriers(
     t, paths = simulate_ou_process(kappa=kappa, theta=theta, sigma=sigma, x0=x0,
                                    T=T, n_steps=n_steps, n_paths=n_paths)
     
-    tp_grid = np.linspace(0.5 * sigma, 4 * sigma, 8)
-    sl_grid = np.linspace(-4 * sigma, -0.5 * sigma, 8)
-    vb_grid = np.array([50, 100, 200, 300, 500, 1000])  # ปรับตาม data ของคุณ
+    def objective(trial):
+        # Suggest parameters
+        tp = trial.suggest_float('tp', 1.0 * sigma, 50 * sigma)
+        sl = trial.suggest_float('sl', -50 * sigma, -1.0 * sigma)
+        vb = trial.suggest_int('vb', 10, 100, step=5)
+        
+        if abs(sl) > tp:
+            return -np.inf  # Invalid case
+        
+        # Evaluate parameters
+        returns = []
+        holdings = []
+        for p in paths.T:
+            ret, hold = evaluate_triple_barrier(p, tp, sl, vb)
+            returns.append(ret)
+            holdings.append(hold)
+        
+        mean_ret = np.mean(returns)
+        std_ret = np.std(returns) if np.std(returns) > 0 else 1e-6
+        sharpe = mean_ret / std_ret  # rf=0
+        
+        return sharpe
     
-    best_sharpe = -np.inf
-    best_params = None
+    # Create study and optimize
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=show_progress)
     
-    for tp in tp_grid:
-        for sl in sl_grid:
-            for vb in vb_grid:
-                returns = []
-                holdings = []
-                for p in paths.T:
-                    ret, hold = evaluate_triple_barrier(p, tp, sl, vb)
-                    returns.append(ret)
-                    holdings.append(hold)
-                
-                mean_ret = np.mean(returns)
-                std_ret = np.std(returns) if np.std(returns) > 0 else 1e-6
-                sharpe = mean_ret / std_ret  # rf=0
-                
-                if sharpe > best_sharpe:
-                    best_sharpe = sharpe
-                    best_params = (tp, sl, vb, np.mean(holdings))
+    # Get best trial
+    best_trial = study.best_trial
+    best_tp = best_trial.params['tp']
+    best_sl = best_trial.params['sl']
+    best_vb = best_trial.params['vb']
     
-    print(f"Optimal: TP={best_params[0]:.4f} ({best_params[0]/sigma:.2f}σ), "
-          f"SL={best_params[1]:.4f} ({best_params[1]/sigma:.2f}σ), "
-          f"VB={best_params[2]} bars, Avg hold={best_params[3]:.1f} bars")
+    # Calculate average holdings for best params
+    holdings = []
+    for p in paths.T:
+        _, hold = evaluate_triple_barrier(p, best_tp, best_sl, best_vb)
+        holdings.append(hold)
+    
+    best_sharpe = best_trial.value
+    avg_hold = np.mean(holdings)
+    
+    print(f"Optimal: TP={best_tp:.4f} ({best_tp/sigma:.2f}σ), "
+          f"SL={best_sl:.4f} ({best_sl/sigma:.2f}σ), "
+          f"VB={best_vb} bars, Avg hold={avg_hold:.1f} bars")
     print(f"Best Sharpe: {best_sharpe:.4f}")
     
-    return best_params[0], abs(best_params[1]), best_params[2]
+    return best_tp, abs(best_sl), best_vb
 
 def simulate_ou_process(
     theta: float = 0.0,
